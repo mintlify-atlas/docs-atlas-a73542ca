@@ -1,0 +1,732 @@
+---
+title: "variable package"
+description: "Core types and primitives for automatic differentiation in autograd."
+keywords: ["variable", "autograd", "gradient", "backward", "Go"]
+---
+
+The `variable` package defines `Variable`, the central type that wraps tensor data and participates in the computation graph. Every forward operation records its inputs and outputs so that `Backward` can propagate gradients automatically.
+
+<Note>
+Import path: `github.com/itsubaki/autograd/variable`
+</Note>
+
+---
+
+## Variable struct
+
+`Variable` is the fundamental unit of computation. It holds numeric data and, when backpropagation is enabled, tracks the function that produced it.
+
+```go
+type Variable struct {
+    Name       string
+    Data       *tensor.Tensor[float64]
+    Grad       *Variable
+    Creator    *Function
+    Generation int
+}
+```
+
+<ResponseField name="Name" type="string">
+  Optional human-readable label. Appears in `String()` output.
+</ResponseField>
+
+<ResponseField name="Data" type="*tensor.Tensor[float64]">
+  The underlying numeric data. See [tensor package](/api/tensor).
+</ResponseField>
+
+<ResponseField name="Grad" type="*Variable">
+  Accumulated gradient after `Backward` is called. `nil` until a backward pass runs.
+</ResponseField>
+
+<ResponseField name="Creator" type="*Function">
+  The `Function` that produced this variable. `nil` for leaf variables.
+</ResponseField>
+
+<ResponseField name="Generation" type="int">
+  Depth in the computation graph. Used to topologically sort functions during backprop.
+</ResponseField>
+
+---
+
+## Constructors
+
+### New
+
+```go
+func New(v ...float64) *Variable
+```
+
+Creates a 1-D variable from the given float64 values.
+
+```go
+x := variable.New(1.0, 2.0, 3.0) // shape [3]
+```
+
+---
+
+### From
+
+```go
+func From(v *tensor.Tensor[float64]) *Variable
+```
+
+Wraps an existing `*tensor.Tensor[float64]` in a `Variable` without copying data.
+
+```go
+t := tensor.New([]int{2, 3}, data)
+x := variable.From(t)
+```
+
+---
+
+### ZeroLike
+
+```go
+func ZeroLike(v *Variable) *Variable
+```
+
+Returns a new variable with the same shape as `v` and all elements set to zero.
+
+---
+
+### OneLike
+
+```go
+func OneLike(v *Variable) *Variable
+```
+
+Returns a new variable with the same shape as `v` and all elements set to one.
+
+---
+
+### Zeros
+
+```go
+func Zeros(shape ...int) *Variable
+```
+
+Creates a variable filled with zeros of the given shape.
+
+```go
+x := variable.Zeros(2, 3) // shape [2, 3], all 0.0
+```
+
+---
+
+### Rand
+
+```go
+func Rand(shape []int, s ...randv2.Source) *Variable
+```
+
+Creates a variable with uniform random values in `[0.0, 1.0)`.
+
+<ParamField path="shape" type="[]int" required>
+  Shape of the output variable.
+</ParamField>
+
+<ParamField path="s" type="...randv2.Source">
+  Optional random source for reproducibility.
+</ParamField>
+
+---
+
+### Randn
+
+```go
+func Randn(shape []int, s ...randv2.Source) *Variable
+```
+
+Creates a variable with standard-normal random values.
+
+<ParamField path="shape" type="[]int" required>
+  Shape of the output variable.
+</ParamField>
+
+<ParamField path="s" type="...randv2.Source">
+  Optional random source for reproducibility.
+</ParamField>
+
+---
+
+## Methods
+
+### Backward
+
+```go
+func (v *Variable) Backward(opts ...Opts)
+```
+
+Runs reverse-mode automatic differentiation from `v` back through the computation graph. Gradients accumulate in each variable's `Grad` field.
+
+<ParamField path="opts" type="...Opts">
+  Optional options controlling gradient computation.
+
+  <Expandable title="Opts fields">
+    <ResponseField name="CreateGraph" type="bool">
+      When `true`, the backward pass itself builds a differentiable graph, enabling higher-order gradients.
+    </ResponseField>
+    <ResponseField name="RetainGrad" type="bool">
+      When `true`, intermediate variable gradients are kept after the backward pass. By default they are cleared to save memory.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+```go
+x := variable.New(3.0)
+y := variable.Square(x) // y = x^2
+y.Backward()
+fmt.Println(x.Grad.At()) // 6.0
+```
+
+---
+
+### Cleargrad
+
+```go
+func (v *Variable) Cleargrad()
+```
+
+Sets `v.Grad` to `nil`. Call before a new backward pass when reusing variables.
+
+---
+
+### Unchain
+
+```go
+func (v *Variable) Unchain()
+```
+
+Detaches `v` from the computation graph by setting `Creator` to `nil`. The variable becomes a leaf node.
+
+---
+
+### UnchainBackward
+
+```go
+func (v *Variable) UnchainBackward()
+```
+
+Walks backward through the graph starting from `v` and calls `Unchain` on every reachable variable. Useful for truncated backpropagation through time (TBPTT).
+
+---
+
+### SetCreator
+
+```go
+func (v *Variable) SetCreator(f *Function)
+```
+
+Records the function that produced `v` and increments its generation counter. Called internally by `Function.Forward`; you rarely need this directly.
+
+---
+
+### At
+
+```go
+func (v *Variable) At(indices ...int) float64
+```
+
+Returns the element at the given multi-dimensional indices. If no indices are given, returns the first element (useful for scalar variables).
+
+```go
+x := variable.New(1.0, 2.0, 3.0)
+fmt.Println(x.At(1)) // 2.0
+```
+
+---
+
+### Shape
+
+```go
+func (v *Variable) Shape() []int
+```
+
+Returns a copy of the variable's shape.
+
+---
+
+### Size
+
+```go
+func (v *Variable) Size() int
+```
+
+Returns the total number of elements.
+
+---
+
+### NumDims
+
+```go
+func (v *Variable) NumDims() int
+```
+
+Returns the number of dimensions (rank).
+
+---
+
+### Reshape
+
+```go
+func (v *Variable) Reshape(shape ...int) *Variable
+```
+
+Changes the shape of `v.Data` in-place and returns `v`. This is a non-differentiable in-place reshape; use the `Reshape` function for a differentiable version.
+
+---
+
+### String
+
+```go
+func (v *Variable) String() string
+```
+
+Returns a human-readable representation. For scalar-like variables, prints `name(value)`. For multi-dimensional variables, prints `name[shape](data)`.
+
+---
+
+## Opts struct
+
+```go
+type Opts struct {
+    RetainGrad  bool
+    CreateGraph bool
+}
+```
+
+Pass to `Backward` to control the backward pass:
+
+```go
+// Higher-order gradients
+y.Backward(variable.Opts{CreateGraph: true})
+
+// Keep intermediate gradients
+y.Backward(variable.Opts{RetainGrad: true})
+```
+
+---
+
+## Nograd and TestMode
+
+### Nograd
+
+```go
+func Nograd() *Span
+```
+
+Disables the construction of the computation graph for the duration of a code block. Returns a `Span` whose `End` function re-enables backprop. Use with `defer` or call `End` explicitly.
+
+```go
+span := variable.Nograd()
+defer span.End()
+
+// Operations here do not build a computation graph
+y := variable.Add(x1, x2)
+```
+
+<Tip>
+Use `Nograd` during inference or validation to reduce memory usage.
+</Tip>
+
+---
+
+### TestMode
+
+```go
+func TestMode() *Span
+```
+
+Sets `Config.Train = false` for the duration of a block. Layers such as `DropoutSimple` check this flag to skip stochastic operations at test time.
+
+```go
+span := variable.TestMode()
+defer span.End()
+
+y := myModel.Forward(x)
+```
+
+---
+
+### Span.End
+
+```go
+type Span struct {
+    End func()
+}
+```
+
+Call `End()` to restore the configuration modified by `Nograd` or `TestMode`. Typically used with `defer`.
+
+---
+
+## Arithmetic functions
+
+All arithmetic functions participate in the computation graph and support automatic differentiation.
+
+<AccordionGroup>
+
+<Accordion title="Add / AddC">
+
+```go
+func Add(x ...*Variable) *Variable
+func AddC(c float64, x ...*Variable) *Variable
+```
+
+`Add` computes `x[0] + x[1]`. Handles broadcasting automatically via `SumTo` in the backward pass.
+
+`AddC` computes `c + x[0]` where `c` is a scalar constant.
+
+```go
+y := variable.Add(x1, x2)
+y := variable.AddC(1.0, x)
+```
+
+</Accordion>
+
+<Accordion title="Sub / SubC">
+
+```go
+func Sub(x ...*Variable) *Variable
+func SubC(c float64, x ...*Variable) *Variable
+```
+
+`Sub` computes `x[0] - x[1]`. `SubC` computes `c - x[0]`.
+
+```go
+y := variable.Sub(x1, x2)
+y := variable.SubC(1.0, x) // 1.0 - x
+```
+
+</Accordion>
+
+<Accordion title="Mul / MulC">
+
+```go
+func Mul(x ...*Variable) *Variable
+func MulC(c float64, x ...*Variable) *Variable
+```
+
+`Mul` computes `x[0] * x[1]`. `MulC` computes `c * x[0]`.
+
+```go
+y := variable.Mul(x1, x2)
+y := variable.MulC(2.0, x)
+```
+
+</Accordion>
+
+<Accordion title="Div / DivC">
+
+```go
+func Div(x ...*Variable) *Variable
+func DivC(c float64, x ...*Variable) *Variable
+```
+
+`Div` computes `x[0] / x[1]`. `DivC` computes `c / x[0]`.
+
+```go
+y := variable.Div(x1, x2)
+y := variable.DivC(1.0, x) // 1.0 / x
+```
+
+</Accordion>
+
+<Accordion title="Neg">
+
+```go
+func Neg(x ...*Variable) *Variable
+```
+
+Negates each element: `y = -x[0]`.
+
+```go
+y := variable.Neg(x)
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Math functions
+
+<AccordionGroup>
+
+<Accordion title="Sin">
+
+```go
+func Sin(x ...*Variable) *Variable
+```
+
+Element-wise sine. Backward: `cos(x) * gy`.
+
+</Accordion>
+
+<Accordion title="Cos">
+
+```go
+func Cos(x ...*Variable) *Variable
+```
+
+Element-wise cosine. Backward: `-sin(x) * gy`.
+
+</Accordion>
+
+<Accordion title="Tanh">
+
+```go
+func Tanh(x ...*Variable) *Variable
+```
+
+Element-wise hyperbolic tangent. Backward: `(1 - y²) * gy`.
+
+</Accordion>
+
+<Accordion title="Exp">
+
+```go
+func Exp(x ...*Variable) *Variable
+```
+
+Element-wise `eˣ`. Backward: `y * gy`.
+
+</Accordion>
+
+<Accordion title="Log">
+
+```go
+func Log(x ...*Variable) *Variable
+```
+
+Element-wise natural logarithm. Backward: `gy / x`.
+
+</Accordion>
+
+<Accordion title="Pow">
+
+```go
+func Pow(p float64) func(x ...*Variable) *Variable
+```
+
+Returns a function that raises each element to the power `p`. Backward: `p * x^(p-1) * gy`.
+
+```go
+cube := variable.Pow(3.0)
+y := cube(x)
+```
+
+</Accordion>
+
+<Accordion title="Square">
+
+```go
+func Square(x ...*Variable) *Variable
+```
+
+Convenience wrapper for `Pow(2.0)`. Computes `x²`.
+
+```go
+y := variable.Square(x)
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Tensor operations
+
+<AccordionGroup>
+
+<Accordion title="Sum">
+
+```go
+func Sum(axes ...int) func(x ...*Variable) *Variable
+```
+
+Reduces elements along the specified axes. If no axes are given, sums all elements.
+
+```go
+total := variable.Sum()(x)          // scalar
+rowsum := variable.Sum(1)(x)        // sum along axis 1
+```
+
+</Accordion>
+
+<Accordion title="SumTo">
+
+```go
+func SumTo(shape ...int) func(x ...*Variable) *Variable
+```
+
+Reduces `x` to the target shape by summing over broadcast axes. Used internally for gradient accumulation.
+
+</Accordion>
+
+<Accordion title="Mean">
+
+```go
+func Mean(axes ...int) func(x ...*Variable) *Variable
+```
+
+Computes the mean over the specified axes (or all elements if no axes given).
+
+```go
+m := variable.Mean()(x)      // mean of all elements
+m := variable.Mean(0)(x)     // mean along axis 0
+```
+
+</Accordion>
+
+<Accordion title="Variance">
+
+```go
+func Variance(axes ...int) func(x ...*Variable) *Variable
+```
+
+Computes the variance over the specified axes.
+
+```go
+v := variable.Variance()(x)
+```
+
+</Accordion>
+
+<Accordion title="BroadcastTo">
+
+```go
+func BroadcastTo(shape ...int) func(x ...*Variable) *Variable
+```
+
+Broadcasts `x` to the given shape. Backward passes the gradient through `SumTo`.
+
+```go
+y := variable.BroadcastTo(3, 4)(x)
+```
+
+</Accordion>
+
+<Accordion title="Reshape">
+
+```go
+func Reshape(shape ...int) func(x ...*Variable) *Variable
+```
+
+Differentiable reshape. Returns a new variable with the given shape.
+
+```go
+flat := variable.Reshape(-1)(x)      // flatten; -1 infers size
+mat  := variable.Reshape(2, 3)(x)
+```
+
+</Accordion>
+
+<Accordion title="Transpose / TransposeMatMul">
+
+```go
+func Transpose(axes ...int) func(x ...*Variable) *Variable
+func TransposeMatMul(ndim int) func(x ...*Variable) *Variable
+```
+
+`Transpose` permutes axes. Without arguments, reverses all axes.
+
+`TransposeMatMul` swaps the last two dimensions, which is the transpose convention used for matrix multiplication.
+
+```go
+xt := variable.Transpose()(x)              // reverse all axes
+xt := variable.Transpose(0, 2, 1)(x)       // permute specific axes
+wt := variable.TransposeMatMul(w.NumDims())(w)
+```
+
+</Accordion>
+
+<Accordion title="MatMul">
+
+```go
+func MatMul(x ...*Variable) *Variable
+```
+
+Batched matrix multiplication of `x[0]` and `x[1]`. Supports broadcasting over batch dimensions.
+
+```go
+y := variable.MatMul(x, w)
+```
+
+</Accordion>
+
+<Accordion title="Max / Min">
+
+```go
+func Max(axes ...int) func(x ...*Variable) *Variable
+func Min(axes ...int) func(x ...*Variable) *Variable
+```
+
+Reduces to the maximum or minimum value along the given axes. Gradient is routed only to the positions that achieved the max/min.
+
+```go
+m := variable.Max()(x)     // global max
+m := variable.Max(1)(x)    // max along axis 1
+```
+
+</Accordion>
+
+<Accordion title="Clip">
+
+```go
+func Clip(min, max float64) func(x ...*Variable) *Variable
+```
+
+Clamps each element to `[min, max]`. Gradient is zero outside the clamp range.
+
+```go
+y := variable.Clip(0.0, 1.0)(x)
+```
+
+</Accordion>
+
+<Accordion title="GetItem">
+
+```go
+func GetItem(indices []int, axis int) func(x ...*Variable) *Variable
+```
+
+Selects rows (or slices along `axis`) at the given indices. Equivalent to NumPy's `take`.
+
+```go
+y := variable.GetItem([]int{0, 2}, 0)(x)
+```
+
+</Accordion>
+
+<Accordion title="Concat">
+
+```go
+func Concat(axis int) func(x ...*Variable) *Variable
+```
+
+Concatenates multiple variables along `axis`. Backward splits the gradient.
+
+```go
+y := variable.Concat(0)(x1, x2, x3)
+```
+
+</Accordion>
+
+<Accordion title="Split">
+
+```go
+func Split(size []int, axis int) func(x ...*Variable) []*Variable
+```
+
+Splits a variable into parts of the given sizes along `axis`. Returns multiple variables.
+
+```go
+parts := variable.Split([]int{2, 3}, 0)(x)
+```
+
+</Accordion>
+
+</AccordionGroup>

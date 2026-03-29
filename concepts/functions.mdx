@@ -1,0 +1,228 @@
+---
+title: "Functions"
+description: "How autograd functions connect variables into a computation graph and implement differentiable operations."
+keywords: ["function", "forward", "backward", "computation graph", "autograd", "go"]
+---
+
+Every differentiable operation in autograd is a `Function` — a struct that records its inputs and outputs during the forward pass so the backward pass can retrace the computation.
+
+## The Function abstraction
+
+A `Function` wraps a `Forwarder`, which is the interface you implement to define a new operation:
+
+```go
+type Forwarder interface {
+    Forward(x ...*Variable) []*Variable
+    Backward(gy ...*Variable) []*Variable
+}
+```
+
+The `Function` struct itself stores the bookkeeping information:
+
+```go
+type Function struct {
+    Input, Output []*Variable
+    Generation    int
+    Forwarder
+}
+```
+
+| Field        | Type          | Description                                                           |
+| ------------ | ------------- | --------------------------------------------------------------------- |
+| `Input`      | `[]*Variable` | Variables consumed during the forward pass.                           |
+| `Output`     | `[]*Variable` | Variables produced during the forward pass.                           |
+| `Generation` | `int`         | Maximum generation of all inputs. Used to order the backward queue.   |
+| `Forwarder`  | interface     | The concrete operation that provides `Forward` and `Backward`.        |
+
+## How functions build the graph
+
+When `Function.Forward()` runs with backprop enabled, it:
+
+<Steps>
+  <Step title="Runs the concrete Forward">
+    Delegates to `Forwarder.Forward(x...)` to compute the output tensors.
+  </Step>
+  <Step title="Records the generation">
+    Sets `f.Generation` to the maximum generation across all inputs. This establishes a topological order for the backward pass.
+  </Step>
+  <Step title="Links outputs back to this function">
+    Calls `y.SetCreator(f)` on each output, which sets `y.Creator = f` and `y.Generation = f.Generation + 1`.
+  </Step>
+  <Step title="Saves inputs and outputs">
+    Stores references to inputs and outputs in `f.Input` and `f.Output` so they are accessible during `Backward`.
+  </Step>
+</Steps>
+
+```go
+// Inside Function.Forward (simplified)
+f.Generation = maxgen(x...)  // depth in graph
+f.setCreator(y)              // y.Creator = f
+f.Input, f.Output = x, y
+```
+
+## Calling built-in functions
+
+All built-in operations are top-level functions that construct and call a `Function` internally. You never instantiate `Function` or its `Forwarder` directly.
+
+```go
+x := variable.New(3.0)
+
+y := variable.Square(x)   // y = x²
+z := variable.Sin(y)      // z = sin(y)
+z.Backward()
+
+fmt.Println(x.Grad)       // dz/dx = cos(x²) * 2x ≈ variable(-5.466)
+```
+
+### Convenience helper: First
+
+`Function.First` runs the forward pass and returns the first output element — a shorthand for single-output operations.
+
+```go
+// These are equivalent:
+y := (&Function{Forwarder: &SinT{}}).Forward(x)[0]
+y := (&Function{Forwarder: &SinT{}}).First(x)
+```
+
+## Available functions
+
+<AccordionGroup>
+  <Accordion title="Arithmetic">
+    | Function | Description                          |
+    | -------- | ------------------------------------ |
+    | `Add`    | Element-wise addition with broadcast |
+    | `AddC`   | Add a scalar constant                |
+    | `Sub`    | Element-wise subtraction             |
+    | `SubC`   | Subtract a scalar constant           |
+    | `Mul`    | Element-wise multiplication          |
+    | `MulC`   | Multiply by a scalar constant        |
+    | `Div`    | Element-wise division                |
+    | `DivC`   | Divide by a scalar constant          |
+    | `Neg`    | Unary negation                       |
+    | `Pow`    | Raise to a scalar power              |
+    | `Square` | Square (equivalent to `Pow(2.0)`)    |
+  </Accordion>
+  <Accordion title="Trigonometric and transcendental">
+    | Function | Description              |
+    | -------- | ------------------------ |
+    | `Sin`    | Element-wise sine        |
+    | `Cos`    | Element-wise cosine      |
+    | `Tanh`   | Hyperbolic tangent       |
+    | `Exp`    | Element-wise exponential |
+    | `Log`    | Natural logarithm        |
+  </Accordion>
+  <Accordion title="Tensor operations">
+    | Function         | Description                              |
+    | ---------------- | ---------------------------------------- |
+    | `Reshape`        | Change shape without copying data        |
+    | `Transpose`      | Reverse axis order                       |
+    | `MatMul`         | Matrix multiplication                    |
+    | `TransposeMatMul`| Multiply with transposed left operand    |
+    | `Sum`            | Sum over specified axes                  |
+    | `SumTo`          | Sum to a target shape (used in broadcast)|
+    | `BroadcastTo`    | Expand to a target shape                 |
+    | `GetItem`        | Index into a variable                    |
+    | `Concat`         | Concatenate along an axis                |
+    | `Split`          | Split along an axis                      |
+  </Accordion>
+  <Accordion title="Reduction and statistics">
+    | Function   | Description                      |
+    | ---------- | -------------------------------- |
+    | `Max`      | Maximum value (with indices)     |
+    | `Min`      | Minimum value (with indices)     |
+    | `Clip`     | Clamp values to a range          |
+    | `Mean`     | Arithmetic mean                  |
+    | `Variance` | Variance                         |
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+All functions are exported from both `github.com/itsubaki/autograd/variable` and the convenience package `github.com/itsubaki/autograd/function`, which re-exports the same symbols.
+</Note>
+
+## Composite functions: an example
+
+Functions compose naturally. Each call returns a `Variable` that you pass to the next function, building a graph step by step.
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    // Compute z = sin(x² + y) and differentiate with respect to x and y
+    x := variable.New(1.0)
+    y := variable.New(0.5)
+
+    x2 := variable.Square(x)         // x²
+    t  := variable.Add(x2, y)        // x² + y
+    z  := variable.Sin(t)            // sin(x² + y)
+
+    z.Backward()
+
+    fmt.Println("z    =", z)         // z    = variable(0.997...)
+    fmt.Println("dz/dx=", x.Grad)    // dz/dx = cos(x² + y) * 2x
+    fmt.Println("dz/dy=", y.Grad)    // dz/dy = cos(x² + y)
+}
+```
+
+The computation graph built during the forward pass:
+
+```
+x(gen=0) ──► Square(gen=0) ──► x²(gen=1) ──►
+                                              Add(gen=1) ──► t(gen=2) ──► Sin(gen=2) ──► z(gen=3)
+y(gen=0) ───────────────────────────────────►
+```
+
+Generation numbers ensure the backward pass processes functions from highest to lowest generation — right to left through the graph.
+
+## Implementing a custom function
+
+To define a new differentiable operation, implement the `Forwarder` interface and wrap it in a `Function`:
+
+```go
+// Cube computes x³ with gradient 3x²
+type CubeT struct {
+    x *Variable
+}
+
+func (f *CubeT) Forward(x ...*Variable) []*Variable {
+    f.x = x[0]
+    y := tensor.Mul(tensor.Mul(x[0].Data, x[0].Data), x[0].Data)
+    return []*Variable{variable.From(y)}
+}
+
+func (f *CubeT) Backward(gy ...*Variable) []*Variable {
+    // d/dx x³ = 3x²
+    gx := variable.MulC(3.0, variable.Square(f.x))
+    return []*Variable{variable.Mul(gx, gy[0])}
+}
+
+func Cube(x *variable.Variable) *variable.Variable {
+    return (&variable.Function{Forwarder: &CubeT{}}).First(x)
+}
+```
+
+<Warning>
+Save any inputs you need in the `Forward` method (like `f.x` above). After the forward pass, the `Function` only has access to what it stored in its fields — the original input references are not reachable otherwise during `Backward`.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Variables" icon="database" href="/concepts/variables">
+    Understand the Variable struct that functions operate on.
+  </Card>
+  <Card title="Automatic differentiation" icon="arrow-right-arrow-left" href="/concepts/autograd">
+    See how the backward pass walks the graph functions build.
+  </Card>
+  <Card title="Function API reference" icon="code" href="/api/function">
+    Full reference for all built-in functions.
+  </Card>
+  <Card title="Higher-order gradients" icon="chart-line" href="/guides/higher-order-gradients">
+    Use CreateGraph to differentiate through the backward pass itself.
+  </Card>
+</CardGroup>

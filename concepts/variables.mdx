@@ -1,0 +1,185 @@
+---
+title: "Variables"
+description: "The fundamental data container in autograd — a tensor wrapper that tracks gradient information and its position in the computation graph."
+keywords: ["variable", "tensor", "gradient", "autograd", "go"]
+---
+
+A `Variable` wraps a `*tensor.Tensor[float64]` and adds the metadata needed for automatic differentiation: a gradient field, a pointer to the function that created it, and a generation counter used to order the backward pass.
+
+## The Variable struct
+
+```go
+type Variable struct {
+    Name       string
+    Data       *tensor.Tensor[float64]
+    Grad       *Variable
+    Creator    *Function
+    Generation int
+}
+```
+
+| Field        | Type                       | Description                                                          |
+| ------------ | -------------------------- | -------------------------------------------------------------------- |
+| `Name`       | `string`                   | Optional label used in the `String()` output.                        |
+| `Data`       | `*tensor.Tensor[float64]`  | The underlying numerical data.                                       |
+| `Grad`       | `*Variable`                | Gradient with respect to some scalar loss. Set by `Backward()`.      |
+| `Creator`    | `*Function`                | The function that produced this variable. `nil` for leaf variables.  |
+| `Generation` | `int`                      | Depth in the computation graph. Used to order backward traversal.   |
+
+## Creating variables
+
+### From literal values
+
+```go
+x := variable.New(1.0, 2.0, 3.0) // shape [3]
+```
+
+### From an existing tensor
+
+```go
+t := tensor.New([]int{2, 3}, []float64{1, 2, 3, 4, 5, 6})
+x := variable.From(t) // shape [2 3]
+```
+
+### Filled variables
+
+```go
+// Zero-filled with explicit shape
+z := variable.Zeros(2, 3)          // shape [2 3], all zeros
+
+// Same shape as another variable, filled with zeros or ones
+a := variable.New(1.0, 2.0, 3.0)
+zl := variable.ZeroLike(a)         // shape [3], all zeros
+ol := variable.OneLike(a)          // shape [3], all ones
+```
+
+### Random variables
+
+```go
+// Uniform random values in [0, 1)
+r := variable.Rand([]int{2, 3})
+
+// Standard-normal random values
+rn := variable.Randn([]int{2, 3})
+
+// Reproducible results with a fixed source
+import randv2 "math/rand/v2"
+src := randv2.NewSource(42)
+r2 := variable.Rand([]int{2, 3}, src)
+```
+
+<Note>
+`Rand` and `Randn` accept an optional `randv2.Source` as the second argument for reproducible results.
+</Note>
+
+## Inspecting shape and data
+
+```go
+x := variable.New(1, 2, 3, 4, 5, 6).Reshape(2, 3)
+
+x.Shape()   // []int{2, 3}
+x.NumDims() // 2
+x.Size()    // 6
+x.At(1, 2)  // 6.0  — element at row 1, col 2
+x.At()      // 1.0  — first element when no indices given
+```
+
+## Reshaping
+
+`Reshape` modifies the variable in place and returns it, so you can chain it with construction calls.
+
+```go
+v := variable.New(1, 2, 3, 4, 5, 6).Reshape(2, 3)
+// v is now a [2 3] matrix
+```
+
+<Warning>
+`Reshape` mutates the variable's underlying tensor shape. The total number of elements must remain the same.
+</Warning>
+
+## Naming variables
+
+Setting `Name` changes how a variable is printed, which is useful for debugging.
+
+```go
+x := variable.New(1.0, 2.0)
+x.Name = "x"
+fmt.Println(x) // x[2]([1 2])
+```
+
+## The Grad field
+
+`Grad` starts as `nil`. After calling `Backward()` on a downstream variable, autograd accumulates the gradient into `Grad`.
+
+```go
+x := variable.New(3.0)
+y := variable.Square(x)  // y = x²
+y.Backward()
+
+fmt.Println(x.Grad) // variable(6)  — dy/dx = 2x = 6
+```
+
+### Clearing gradients
+
+Gradients accumulate across multiple `Backward()` calls. Call `Cleargrad()` before the next forward pass when reusing a variable.
+
+```go
+x := variable.New(3.0)
+
+y := variable.Square(x)
+y.Backward()
+fmt.Println(x.Grad) // variable(6)
+
+x.Cleargrad()
+
+y2 := variable.Square(x)
+y2.Backward()
+fmt.Println(x.Grad) // variable(6)  — fresh, not variable(12)
+```
+
+## Detaching from the graph
+
+### Unchain
+
+`Unchain()` removes the direct link from a single variable to its creator function, stopping backward propagation at that variable.
+
+```go
+y := variable.Pow(2.0)(x)
+y.Unchain()
+fmt.Println(y.Creator) // <nil>
+```
+
+### UnchainBackward
+
+`UnchainBackward()` walks the entire graph backwards from a variable and removes all creator links, detaching the complete subgraph.
+
+```go
+x := variable.New(1.0)
+y := variable.Pow(2.0)(x)
+z := variable.Sin(y)
+
+z.UnchainBackward()
+fmt.Println(y.Creator) // <nil>  — link severed
+fmt.Println(z.Creator) // *variable.SinT[...]  — z itself keeps its creator
+```
+
+<Tip>
+Use `UnchainBackward()` to truncate-through-time in recurrent network training, freeing memory from old graph segments.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Functions" icon="function" href="/concepts/functions">
+    Learn how functions build the computation graph.
+  </Card>
+  <Card title="Automatic differentiation" icon="arrow-right-arrow-left" href="/concepts/autograd">
+    Understand how Backward() traverses the graph.
+  </Card>
+  <Card title="Variable API reference" icon="code" href="/api/variable">
+    Full reference for the variable package.
+  </Card>
+  <Card title="Gradient descent guide" icon="chart-line" href="/guides/gradient-descent">
+    Put variables and gradients to work in an optimizer loop.
+  </Card>
+</CardGroup>

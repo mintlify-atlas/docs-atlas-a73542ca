@@ -1,0 +1,179 @@
+---
+title: "Higher-Order Gradients"
+description: "Compute derivatives of derivatives by retaining the computation graph during backward passes."
+---
+
+By default, `Backward()` computes gradients but does not build a graph for those gradients — they cannot themselves be differentiated. Passing `variable.Opts{CreateGraph: true}` retains the computation graph through the backward pass, enabling a second `Backward()` call to differentiate the gradient itself.
+
+## How it works
+
+When autograd evaluates `y = f(x)`, it records the computation as a graph. Calling `y.Backward()` traverses this graph in reverse, computing `∂y/∂x` and storing it in `x.Grad`. The gradient is a plain variable with no attached graph.
+
+With `CreateGraph: true`, the backward computation itself becomes a differentiable graph. The result stored in `x.Grad` is a variable connected to a computation graph, so you can call `x.Grad.Backward()` again to obtain the second derivative.
+
+## Double backpropagation — Sin example
+
+The derivatives of sin cycle with period 4: `sin → cos → -sin → -cos → sin → ...`
+
+Starting from `x = 1.0`:
+
+```go
+package main
+
+import (
+    "fmt"
+
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    x := variable.New(1.0)
+    y := F.Sin(x)
+
+    // First backward: retain the graph so the gradient is differentiable
+    y.Backward(variable.Opts{
+        CreateGraph: true,
+    })
+
+    fmt.Println(y)      // sin(1) ≈ 0.8415
+    fmt.Println(x.Grad) // cos(1) ≈ 0.5403
+
+    // Compute five more higher-order derivatives
+    for range 5 {
+        gx := x.Grad
+        x.Cleargrad()
+        gx.Backward(variable.Opts{
+            CreateGraph: true,
+        })
+
+        fmt.Println(x.Grad)
+    }
+}
+```
+
+**Output:**
+```
+variable(0.8414709848078965)
+variable(0.5403023058681398)
+variable(-0.8414709848078965)
+variable(-0.5403023058681398)
+variable(0.8414709848078965)
+variable(0.5403023058681398)
+variable(-0.8414709848078965)
+```
+
+The derivatives cycle as expected: `cos(1)`, `-sin(1)`, `-cos(1)`, `sin(1)`, `cos(1)`, `-sin(1)`.
+
+<Note>
+  Call `x.Cleargrad()` between iterations to discard the previous gradient before computing the next one. Without it, gradients accumulate via addition instead of replacing the previous value.
+</Note>
+
+## Newton's method via double backprop
+
+Newton's method requires the second derivative. With `CreateGraph: true`, you can compute it without manually writing the second derivative formula.
+
+```go
+import (
+    "fmt"
+
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/tensor"
+    "github.com/itsubaki/autograd/variable"
+)
+
+f := func(x *variable.Variable) *variable.Variable {
+    // y = x^4 - 2x^2
+    y0 := F.Pow(4.0)(x)  // x^4
+    y1 := F.Pow(2.0)(x)  // x^2
+    y2 := F.MulC(2, y1)  // 2x^2
+    return F.Sub(y0, y2)  // x^4 - 2x^2
+}
+
+x := variable.New(2.0)
+
+for range 10 {
+    fmt.Println(x)
+
+    y := f(x)
+    x.Cleargrad()
+
+    // First backward: retain graph to allow differentiating gx
+    y.Backward(variable.Opts{CreateGraph: true})
+    gx := x.Grad
+
+    // Second backward: compute d²y/dx²
+    x.Cleargrad()
+    gx.Backward()
+    gx2 := x.Grad
+
+    // Newton step: x = x - f'(x) / f''(x)
+    x.Data = tensor.Sub(x.Data, tensor.Div(gx.Data, gx2.Data))
+}
+```
+
+**Output:**
+```
+variable(2)
+variable(1.4545454545454546)
+variable(1.1510467893775467)
+variable(1.0253259289766978)
+variable(1.0009084519430513)
+variable(1.0000012353089454)
+variable(1.000000000002289)
+variable(1)
+variable(1)
+variable(1)
+```
+
+Newton's method converges in 7 iterations to the local minimum at `x = 1`.
+
+## Combining higher-order gradients
+
+You can mix first and second derivatives in the same expression. For example, computing `z = (dy/dx)³ + y`:
+
+```go
+// y = x^2, so dy/dx = 2x
+// z = (dy/dx)^3 + y = 8x^3 + x^2
+// dz/dx = 24x^2 + 2x  → at x=2: 24*4 + 4 = 100
+
+x := variable.New(2.0)
+y := F.Pow(2.0)(x)
+y.Backward(variable.Opts{CreateGraph: true})
+gx := x.Grad
+
+z := F.Add(F.Pow(3.0)(gx), y)
+x.Cleargrad()
+z.Backward()
+fmt.Println(x.Grad) // variable(100)
+```
+
+## When to use higher-order gradients
+
+| Use case | Why |
+|---|---|
+| Newton's method | Requires the Hessian (second derivative) for each update step |
+| Hessian-vector products | Efficient second-order information for optimization |
+| Meta-learning (MAML) | Differentiating through an inner optimization loop |
+| Gradient penalty (e.g. WGAN-GP) | Penalizing the norm of gradients as part of the loss |
+
+<Warning>
+  Retaining computation graphs increases memory usage proportionally to the depth of differentiation. For long chains of higher-order derivatives, memory can grow significantly. Use `CreateGraph: true` only when you actually need to differentiate the gradient.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Gradient Descent" icon="arrow-down" href="/guides/gradient-descent">
+    First-order optimization using plain Backward() calls.
+  </Card>
+  <Card title="Visualization" icon="diagram-project" href="/guides/visualization">
+    Render computation graphs as images to understand the graph structure.
+  </Card>
+  <Card title="Autograd Concepts" icon="gear" href="/concepts/autograd">
+    How the computation graph is built and traversed during backward passes.
+  </Card>
+  <Card title="Variable API" icon="variable" href="/api/variable">
+    Full reference for variable.Opts, Cleargrad, and Backward.
+  </Card>
+</CardGroup>

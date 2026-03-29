@@ -1,0 +1,139 @@
+---
+title: "Computation Graph Visualization"
+description: "Export computation graphs as DOT files and render them as images with Graphviz."
+---
+
+The `cmd/dot` tool generates a [Graphviz DOT](https://graphviz.org/doc/info/lang.html) description of a computation graph. This is useful for understanding how a function's graph changes as you compute higher-order derivatives.
+
+## Prerequisites
+
+Install [Graphviz](https://graphviz.org/) to render DOT files as images:
+
+```bash
+# macOS
+brew install graphviz
+
+# Ubuntu / Debian
+sudo apt-get install graphviz
+```
+
+## Generating a graph
+
+Run `cmd/dot/main.go` to produce a DOT file, then pipe it to Graphviz:
+
+```bash
+go run cmd/dot/main.go -func tanh -order 2 -verbose > sample.dot
+dot sample.dot -T png -o sample.png
+```
+
+This generates the second-order derivative graph for `tanh` and writes it to `sample.png`.
+
+## Available flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `-func` | string | `tanh` | The function to visualize. See the table below for valid values. |
+| `-order` | int | `1` | The derivative order to visualize. `1` shows the first derivative graph, `2` the second, and so on. Must be ≥ 1. |
+| `-x` | float64 | `1.0` | The input value at which the graph is evaluated. |
+| `-verbose` | bool | `false` | Include variable values as node labels in the graph. |
+
+### Available functions
+
+| `-func` value | Mathematical function |
+|---|---|
+| `sin` | sin(x) |
+| `cos` | cos(x) |
+| `tanh` | tanh(x) |
+| `exp` | exp(x) |
+| `log` | log(x) |
+| `pow` | x³ |
+| `square` | x² |
+| `neg` | -x |
+
+## Examples
+
+### First-order derivative of tanh
+
+```bash
+go run cmd/dot/main.go -func tanh -order 1 > tanh1.dot
+dot tanh1.dot -T png -o tanh1.png
+```
+
+### Second-order derivative of tanh
+
+```bash
+go run cmd/dot/main.go -func tanh -order 2 > tanh2.dot
+dot tanh2.dot -T png -o tanh2.png
+```
+
+### Third-order derivative with values shown
+
+```bash
+go run cmd/dot/main.go -func tanh -order 3 -verbose > tanh3.dot
+dot tanh3.dot -T png -o tanh3.png
+```
+
+### Sine function at a different input value
+
+```bash
+go run cmd/dot/main.go -func sin -order 2 -x 0.5 -verbose > sin2.dot
+dot sin2.dot -T png -o sin2.png
+```
+
+## Output formats
+
+Graphviz supports many output formats via the `-T` flag:
+
+```bash
+dot sample.dot -T png -o sample.png   # PNG image
+dot sample.dot -T svg -o sample.svg   # SVG (scalable)
+dot sample.dot -T pdf -o sample.pdf   # PDF document
+dot sample.dot -T dot -o sample.dot   # Canonical DOT (for further processing)
+```
+
+## How it works
+
+The tool:
+
+<Steps>
+  <Step title="Evaluates the function">
+    Creates an input variable `x` with the given `-x` value, applies the chosen function, and names the output `y`.
+  </Step>
+  <Step title="Runs backward with CreateGraph">
+    Calls `y.Backward(variable.Opts{CreateGraph: true})` to retain the computation graph through the backward pass, making the gradient itself differentiable.
+  </Step>
+  <Step title="Iterates to the requested order">
+    For each additional order, calls `gx.Backward(variable.Opts{CreateGraph: true})` on the previous gradient, clearing `x.Grad` before each step.
+  </Step>
+  <Step title="Generates DOT output">
+    Passes the final gradient variable to `dot.Graph()`, which walks the computation graph and produces DOT-format text printed to stdout.
+  </Step>
+</Steps>
+
+The resulting DOT file describes nodes (variables and functions) and directed edges (data flow), which Graphviz renders into a graph image.
+
+<Tip>
+  Higher-order derivative graphs grow quickly in node count. For `-order 4` or above, consider using `-T svg` so the image remains crisp when zoomed in, or use a layout engine with better handling of large graphs such as `neato` or `fdp` instead of the default `dot`.
+</Tip>
+
+```bash
+# Use the 'neato' layout for large graphs
+neato sample.dot -T svg -o sample.svg
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Higher-Order Gradients" icon="chart-line" href="/guides/higher-order-gradients">
+    Learn how CreateGraph enables the multi-order differentiation that the dot tool visualizes.
+  </Card>
+  <Card title="Autograd Concepts" icon="gear" href="/concepts/autograd">
+    Understand computation graph construction and traversal.
+  </Card>
+  <Card title="Functions API" icon="function" href="/api/function">
+    Browse all available differentiable functions.
+  </Card>
+  <Card title="Variable API" icon="variable" href="/api/variable">
+    Reference for variable.Opts and Backward options.
+  </Card>
+</CardGroup>

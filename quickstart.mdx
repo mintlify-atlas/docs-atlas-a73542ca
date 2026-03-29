@@ -1,80 +1,171 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart'
+description: 'Install autograd and compute your first gradient in Go.'
 ---
 
-## Get started in three steps
+This guide walks you from a blank Go module to a working gradient computation.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+- Go 1.23 or later
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
 
-### Step 2: Deploy your changes
+<Step title="Install the package">
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+```bash
+go get github.com/itsubaki/autograd
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+The library has no external dependencies — `go get` pulls in only the autograd module itself.
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+</Step>
 
-### Step 3: Go live
+<Step title="Import the packages">
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+The two packages you need for most tasks are `variable` and `function`:
 
-## Next steps
+```go
+import (
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/variable"
+)
+```
 
-Now that you have your docs running, explore these key features:
+`function` re-exports everything from `variable` under a shorter alias. Importing it as `F` keeps call sites concise.
 
-<CardGroup cols={2}>
+</Step>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+<Step title="Create variables">
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+Wrap scalar or multi-element values with `variable.New`:
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+```go
+x := variable.New(1.0)
+```
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+`variable.New` accepts one or more `float64` values. The result is a `*variable.Variable` holding a tensor of that shape.
 
-</CardGroup>
+</Step>
+
+<Step title="Run a forward pass">
+
+Apply differentiable functions to build a computation:
+
+```go
+x := variable.New(0.5)
+y := F.Square(F.Exp(F.Square(x)))
+
+fmt.Println(y) // variable(1.648721270700128)
+```
+
+Each function call records itself on the output variable. The computation graph grows as you compose functions.
+
+</Step>
+
+<Step title="Call Backward and read the gradient">
+
+Call `Backward()` on the output variable to propagate gradients back to every input:
+
+```go
+x := variable.New(0.5)
+y := F.Square(F.Exp(F.Square(x)))
+y.Backward()
+
+fmt.Println(x.Grad) // variable(3.297442541400256)
+```
+
+`x.Grad` is itself a `*variable.Variable` holding `dy/dx` evaluated at `x = 0.5`.
+
+</Step>
+
+</Steps>
+
+## Composite function example
+
+Real computations involve multiple inputs. Here is the Matyas function — a common test case for gradient-based optimizers:
+
+```go
+matyas := func(x, y *variable.Variable) *variable.Variable {
+    // 0.26(x^2 + y^2) - 0.48xy
+    z0 := F.MulC(0.26, F.Add(F.Pow(2.0)(x), F.Pow(2.0)(y)))
+    z1 := F.MulC(0.48, F.Mul(x, y))
+    return F.Sub(z0, z1)
+}
+
+x := variable.New(1.0)
+y := variable.New(1.0)
+z := matyas(x, y)
+z.Backward()
+
+fmt.Println(x.Grad, y.Grad)
+// variable(0.040000000000000036) variable(0.040000000000000036)
+```
+
+`Backward()` computes partial derivatives with respect to all leaf variables in a single pass. `x.Grad` holds `∂z/∂x` and `y.Grad` holds `∂z/∂y`.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+Call `x.Cleargrad()` before each forward pass when reusing variables across training iterations. Otherwise gradients accumulate across steps.
 </Note>
+
+## Skipping graph construction with NoGrad
+
+During inference or evaluation you do not need gradients. Wrap those sections with `variable.Nograd()` to skip building the computation graph entirely:
+
+```go
+func() {
+    defer variable.Nograd().End()
+
+    // No computation graph is built inside this block.
+    y := m.Forward(x)
+    fmt.Println(y)
+}()
+```
+
+`variable.Nograd()` returns a `*Span`. Calling `.End()` (via `defer`) re-enables graph construction when the function returns.
+
+<Tip>
+Use `defer variable.Nograd().End()` as the first line of any inference helper to ensure graph construction is always restored, even if the function returns early or panics.
+</Tip>
+
+## Higher-order gradients
+
+Pass `variable.Opts{CreateGraph: true}` to make the backward pass itself differentiable. This is required for second-order methods and higher-order derivative analysis:
+
+```go
+x := variable.New(1.0)
+y := F.Sin(x)
+y.Backward(variable.Opts{CreateGraph: true})
+
+fmt.Println(y)      // variable(0.8414709848078965)
+fmt.Println(x.Grad) // variable(0.5403023058681398)  ← cos(1)
+
+for range 5 {
+    gx := x.Grad
+    x.Cleargrad()
+    gx.Backward(variable.Opts{CreateGraph: true})
+    fmt.Println(x.Grad)
+}
+// variable(-0.8414709848078965)
+// variable(-0.5403023058681398)
+// variable(0.8414709848078965)
+// variable(0.5403023058681398)
+// variable(-0.8414709848078965)
+```
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Gradient descent" icon="arrow-trend-down" href="/guides/gradient-descent">
+    Use gradients to minimize a loss function iteratively.
+  </Card>
+  <Card title="Deep learning" icon="brain" href="/guides/deep-learning">
+    Build and train neural networks with layers, models, and optimizers.
+  </Card>
+  <Card title="Higher-order gradients" icon="sigma" href="/guides/higher-order-gradients">
+    Implement Newton's method and other second-order techniques.
+  </Card>
+  <Card title="Variable API" icon="code" href="/api/variable">
+    Full reference for the `variable` package.
+  </Card>
+</CardGroup>

@@ -1,0 +1,234 @@
+---
+title: "Automatic differentiation"
+description: "How autograd builds a computation graph on the forward pass and traverses it in reverse to compute exact gradients."
+keywords: ["automatic differentiation", "backpropagation", "reverse-mode AD", "gradient", "autograd", "go"]
+---
+
+Automatic differentiation (AD) computes exact derivatives of code — not numerical approximations. autograd implements **reverse-mode AD** (also called backpropagation): the forward pass runs your computation and records a graph, then the backward pass walks that graph in reverse, multiplying local Jacobians to accumulate gradients at each input.
+
+## Forward pass: building the graph
+
+Every time you call a function on a `Variable`, the `Function.Forward` method:
+
+1. Runs the concrete computation (e.g., `sin`, `matmul`).
+2. Sets the output's `Creator` pointer back to the function.
+3. Increments the output's `Generation` counter.
+
+This forms a directed acyclic graph (DAG) linking outputs back to inputs through function nodes.
+
+```go
+x := variable.New(1.0)     // Generation 0, Creator nil
+y := variable.Square(x)    // Generation 1, Creator → Square
+z := variable.Sin(y)       // Generation 2, Creator → Sin
+```
+
+At this point no gradients exist — only the graph structure.
+
+## Backward pass: `Backward()`
+
+Calling `z.Backward()` walks the graph from `z` back to the leaves, propagating gradients via the chain rule.
+
+```go
+z.Backward()
+
+fmt.Println(x.Grad) // dz/dx = cos(x²) * 2x
+```
+
+<Steps>
+  <Step title="Seed gradient">
+    `Backward()` initialises `z.Grad` to `OneLike(z)` (a tensor of ones with the same shape) if it is not already set.
+  </Step>
+  <Step title="Priority queue by generation">
+    The backward engine maintains a list of pending functions sorted by `Generation` (highest first). It starts with `z.Creator`.
+  </Step>
+  <Step title="Pop and call Backward">
+    The function with the highest generation is popped. Its `Backward(gy...)` method is called with the upstream gradients from its output variables.
+  </Step>
+  <Step title="Accumulate input gradients">
+    Each returned gradient `gx` is added to the corresponding input's `Grad` field. If the input has a `Creator`, that function is pushed onto the queue.
+  </Step>
+  <Step title="Repeat until the queue is empty">
+    The loop continues until all reachable functions have been visited, leaving gradients on every leaf variable that participated in the computation.
+  </Step>
+</Steps>
+
+### Gradient accumulation
+
+Gradients accumulate: calling `Backward()` twice without clearing adds to existing `Grad` values. Always call `Cleargrad()` before reusing a variable.
+
+```go
+x := variable.New(3.0)
+
+y := variable.Square(x)
+y.Backward()
+fmt.Println(x.Grad) // variable(6)
+
+// Without Cleargrad, the second backward would give variable(12)
+x.Cleargrad()
+
+y2 := variable.Square(x)
+y2.Backward()
+fmt.Println(x.Grad) // variable(6)
+```
+
+## Backward options
+
+`Backward` accepts an optional `Opts` struct that controls two behaviours.
+
+```go
+type Opts struct {
+    RetainGrad  bool
+    CreateGraph bool
+}
+```
+
+### RetainGrad
+
+By default, intermediate variable gradients are cleared after use to free memory. Set `RetainGrad: true` to keep them.
+
+```go
+x0 := variable.New(1.0)
+x1 := variable.New(1.0)
+t  := variable.Add(x0, x1)
+y  := variable.Add(x0, t)
+
+// With RetainGrad: intermediate gradient t.Grad is kept
+y.Backward(variable.Opts{RetainGrad: true})
+fmt.Println(t.Grad)           // variable(1) — kept
+fmt.Println(x0.Grad, x1.Grad) // variable(2) variable(1)
+```
+
+Without `RetainGrad`, intermediate variable gradients (like `t.Grad`) are cleared to `nil` after the backward pass to save memory. Only leaf variable gradients (`x0.Grad`, `x1.Grad`) are retained.
+
+### CreateGraph
+
+By default, the backward pass runs inside a `Nograd()` scope, so the gradient computation itself does not build a graph. Set `CreateGraph: true` to record the backward pass in the graph — this enables higher-order gradients.
+
+```go
+x := variable.New(1.0)
+y := variable.Sin(x)
+y.Backward(variable.Opts{CreateGraph: true})
+
+// x.Grad is now cos(x), and it has its own Creator chain
+fmt.Println(x.Grad) // variable(0.5403...)
+
+// Differentiate again to get -sin(x)
+gx := x.Grad
+x.Cleargrad()
+gx.Backward(variable.Opts{CreateGraph: true})
+fmt.Println(x.Grad) // variable(-0.8414...)
+```
+
+<Tip>
+Use `CreateGraph: true` when computing Hessian-vector products, implementing Newton's method, or training with gradient-based meta-learning. See the [higher-order gradients guide](/guides/higher-order-gradients) for worked examples.
+</Tip>
+
+## Nograd mode
+
+`variable.Nograd()` disables graph creation for a scope. No `Creator` links are set, so no memory is allocated for the backward pass. Use this during inference or evaluation.
+
+```go
+x := variable.New(3.0)
+
+func() {
+    defer variable.Nograd().End()
+
+    y := variable.Square(x)
+    y.Backward()            // y.Creator is nil, so Backward is a no-op
+    fmt.Println(x.Grad)     // <nil>
+}()
+
+// Backprop is automatically re-enabled after the scope exits
+y := variable.Square(x)
+y.Backward()
+fmt.Println(x.Grad) // variable(6)
+```
+
+`Nograd()` returns a `*Span` whose `End()` method restores the previous state. The idiomatic pattern is `defer variable.Nograd().End()`.
+
+<Warning>
+`Nograd` mutates a package-level `Config` variable. It is not safe to use concurrently from multiple goroutines without external synchronisation.
+</Warning>
+
+## Test mode
+
+`variable.TestMode()` sets `Config.Train = false`, which changes the behaviour of operations that differ between training and inference, such as Dropout (which passes values through unchanged in test mode).
+
+```go
+func evaluate(model *MyModel, x *variable.Variable) *variable.Variable {
+    defer variable.TestMode().End()
+    return model.Forward(x)
+}
+```
+
+Like `Nograd`, it returns a `*Span` and is restored automatically when `End()` is called.
+
+```go
+fmt.Println(variable.Config.Train) // true
+
+func() {
+    defer variable.TestMode().End()
+    fmt.Println(variable.Config.Train) // false
+}()
+
+fmt.Println(variable.Config.Train) // true
+```
+
+## Putting it together
+
+The following example computes a loss, backpropagates, and performs a single manual gradient step:
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    // Parameters
+    w := variable.New(2.0)
+    b := variable.New(1.0)
+
+    // Input and target
+    x := variable.New(3.0)
+    target := variable.New(10.0)
+
+    // Forward: pred = w*x + b
+    pred := variable.Add(variable.Mul(w, x), b)
+
+    // Loss: (pred - target)²
+    diff := variable.Sub(pred, target)
+    loss := variable.Square(diff)
+
+    // Backward
+    loss.Backward()
+
+    fmt.Println("loss  =", loss)    // loss  = variable(9)
+    fmt.Println("dL/dw =", w.Grad) // dL/dw = variable(-6)
+    fmt.Println("dL/db =", b.Grad) // dL/db = variable(-2)
+
+    // Manual gradient step (lr = 0.01)
+    lr := 0.01
+    w.Data.Data[0] -= lr * w.Grad.At()
+    b.Data.Data[0] -= lr * b.Grad.At()
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Variables" icon="database" href="/concepts/variables">
+    Review the Variable struct and gradient fields.
+  </Card>
+  <Card title="Functions" icon="function" href="/concepts/functions">
+    See how functions implement Forward and Backward.
+  </Card>
+  <Card title="Higher-order gradients" icon="chart-line" href="/guides/higher-order-gradients">
+    Differentiate through the backward pass with CreateGraph.
+  </Card>
+  <Card title="Gradient descent" icon="arrow-down-to-line" href="/guides/gradient-descent">
+    Use gradients to train a model end to end.
+  </Card>
+</CardGroup>

@@ -1,0 +1,166 @@
+---
+title: "hook package"
+description: "Gradient post-processing hooks for regularization and stability."
+keywords: ["hook", "weight decay", "clip grad", "L2 regularization", "gradient clipping", "optimizer"]
+---
+
+The `hook` package provides gradient-processing functions that run just before an optimizer updates model parameters. Hooks let you apply regularization and gradient clipping without modifying optimizer or model code.
+
+Both functions return a value of type `optimizer.Hook` — `func(params []layer.Parameter)` — and can be attached to any optimizer's `Hook` slice.
+
+---
+
+## WeightDecay
+
+```go
+func WeightDecay(lambda float64) func(params []layer.Parameter)
+```
+
+Adds L2 regularization to each parameter's gradient before the optimizer update:
+
+```
+grad = grad + λ × param
+```
+
+This is equivalent to penalizing large weight values, which discourages overfitting.
+
+<ParamField path="lambda" type="float64" required>
+  The regularization coefficient. Typical values range from `1e-4` to `1e-2`. A larger value applies stronger regularization.
+</ParamField>
+
+<Note>
+  `WeightDecay` modifies gradients in place (gradient-based L2 regularization). For decoupled weight decay — where the penalty is applied directly to the parameters rather than the gradients — use `optimizer.AdamW` instead.
+</Note>
+
+---
+
+## ClipGrad
+
+```go
+func ClipGrad(max float64) func(params []layer.Parameter)
+```
+
+Rescales all gradients so that their global L2 norm does not exceed `max`:
+
+```
+norm = √(Σ grad²)
+if norm > max:
+    grad = grad × (max / norm)
+```
+
+If the global norm is already within `max`, gradients are left unchanged.
+
+<ParamField path="max" type="float64" required>
+  The maximum allowed global gradient norm. Typical values: `1.0` or `5.0`.
+</ParamField>
+
+<Tip>
+  Gradient clipping is especially useful when training RNNs and LSTMs, where exploding gradients are a common problem.
+</Tip>
+
+---
+
+## Attaching hooks to optimizers
+
+Hooks are added to the `Hook` field present on each optimizer struct. They are applied in order by the `optimizer.Params` helper before the parameter update step.
+
+### SGD with weight decay
+
+```go
+import (
+    "github.com/itsubaki/autograd/hook"
+    "github.com/itsubaki/autograd/optimizer"
+)
+
+opt := &optimizer.SGD{
+    LearningRate: 0.01,
+    Hook: []optimizer.Hook{
+        hook.WeightDecay(1e-4),
+    },
+}
+```
+
+### Adam with gradient clipping
+
+```go
+opt := &optimizer.Adam{
+    Alpha: 0.001,
+    Beta1: 0.9,
+    Beta2: 0.999,
+    Hook: []optimizer.Hook{
+        hook.ClipGrad(1.0),
+    },
+}
+```
+
+### Combining multiple hooks
+
+Hooks run in the order they appear in the slice.
+
+```go
+opt := &optimizer.Adam{
+    Alpha: 0.001,
+    Beta1: 0.9,
+    Beta2: 0.999,
+    Hook: []optimizer.Hook{
+        hook.WeightDecay(1e-4), // regularize first
+        hook.ClipGrad(5.0),     // then clip
+    },
+}
+```
+
+---
+
+## Complete example
+
+```go
+package main
+
+import (
+    "fmt"
+
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/hook"
+    "github.com/itsubaki/autograd/model"
+    "github.com/itsubaki/autograd/optimizer"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    mlp := model.NewMLP([]int{64, 64, 1})
+
+    opt := &optimizer.Adam{
+        Alpha: 0.001,
+        Beta1: 0.9,
+        Beta2: 0.999,
+        Hook: []optimizer.Hook{
+            hook.WeightDecay(1e-4),
+            hook.ClipGrad(1.0),
+        },
+    }
+
+    x := variable.New(1.0, 2.0, 3.0)
+    t := variable.New(0.0, 1.0, 0.0)
+
+    for i := range 200 {
+        y := mlp.Forward(x)
+        loss := F.MeanSquaredError(y, t)
+
+        mlp.Cleargrads()
+        loss.Backward()
+        opt.Update(mlp)
+
+        if i%20 == 0 {
+            fmt.Println("loss:", loss.Data)
+        }
+    }
+}
+```
+
+---
+
+## See also
+
+- [optimizer package](/api/optimizer) — SGD, Momentum, Adam, and AdamW
+- [model package](/api/model) — MLP and LSTM model types
+- [Guides: deep learning](/guides/deep-learning) — training loop patterns

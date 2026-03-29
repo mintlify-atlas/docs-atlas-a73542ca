@@ -1,97 +1,67 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "autograd — Automatic Differentiation for Go"
+description: "A pure Go library for reverse-mode automatic differentiation and deep learning, with no external dependencies."
 ---
 
-## Setting up
+autograd is a pure Go automatic differentiation library inspired by [deep-learning-from-scratch-3](https://github.com/oreilly-japan/deep-learning-from-scratch-3). It lets you define mathematical functions over tensors and compute their gradients automatically — enabling gradient descent, neural network training, and higher-order differentiation entirely in Go.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Compute your first gradient in under five minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Core Concepts" icon="brain" href="/concepts/variables">
+    Understand variables, the computation graph, and backpropagation.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Guides" icon="map" href="/guides/gradient-descent">
+    Step-by-step walkthroughs for gradient descent, neural networks, and more.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/variable">
+    Full reference for every package: variable, function, layer, model, optimizer.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Why autograd?
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Pure Go" icon="golang">
+    Zero external dependencies — only the Go standard library. Drop it into any Go project with a single `go get`.
+  </Card>
+  <Card title="Reverse-mode AD" icon="arrow-rotate-left">
+    Efficient backpropagation through arbitrarily deep computation graphs, including higher-order gradients.
+  </Card>
+  <Card title="Deep learning primitives" icon="layer-group">
+    Built-in Linear, RNN, and LSTM layers, plus MLP and LSTM model types ready to train.
+  </Card>
+  <Card title="Multiple optimizers" icon="sliders">
+    SGD, Momentum, Adam, and AdamW — with hooks for weight decay and gradient clipping.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get started
 
-## Need inspiration?
+<Steps>
+  <Step title="Install the package">
+    Add autograd to your Go module:
+    ```bash
+    go get github.com/itsubaki/autograd
+    ```
+  </Step>
+  <Step title="Create a variable and compute a gradient">
+    ```go
+    import (
+        F "github.com/itsubaki/autograd/function"
+        "github.com/itsubaki/autograd/variable"
+    )
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    x := variable.New(1.0)
+    y := F.Sin(x)
+    y.Backward()
+
+    fmt.Println(y)      // variable(0.8414709848078965)
+    fmt.Println(x.Grad) // variable(0.5403023058681398)
+    ```
+  </Step>
+  <Step title="Train a model">
+    Use built-in layers, models, and optimizers to train neural networks on your data. See the [Deep Learning guide](/guides/deep-learning) for a complete walkthrough.
+  </Step>
+</Steps>

@@ -1,0 +1,246 @@
+---
+title: "Deep Learning"
+description: "Build and train neural networks using MLP and LSTM models with SGD, Adam, and other optimizers."
+---
+
+autograd provides ready-to-use model types and optimizers so you can focus on the training loop rather than layer bookkeeping.
+
+## Multi-Layer Perceptron (MLP)
+
+`model.NewMLP` constructs a fully-connected network. Pass the output sizes for each layer as a slice, and optionally configure the activation function and random source.
+
+```go
+import (
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/model"
+    "github.com/itsubaki/autograd/optimizer"
+    "github.com/itsubaki/autograd/rand"
+    "github.com/itsubaki/autograd/variable"
+)
+
+s := rand.Const()
+
+// Two-layer MLP: hidden size 10, output size 1
+// Default activation is Sigmoid; override with WithMLPActivation
+m := model.NewMLP([]int{10, 1},
+    model.WithMLPSource(s),
+    model.WithMLPActivation(F.ReLU),
+)
+```
+
+The last element in the `outSize` slice is the output layer. All preceding layers use the configured activation function; the final layer is linear (no activation).
+
+### Training loop
+
+```go
+o := optimizer.SGD{
+    LearningRate: 0.2,
+}
+
+x := variable.Rand([]int{100, 1}, s)
+t := variable.Rand([]int{100, 1}, s)
+
+for i := range 100 {
+    y := m.Forward(x)
+    loss := F.MeanSquaredError(y, t)
+
+    m.Cleargrads()   // reset all parameter gradients
+    loss.Backward()  // compute gradients
+    o.Update(m)      // apply SGD update to all parameters
+
+    if i%10 == 0 {
+        fmt.Printf("%.8f\n", loss.At())
+    }
+}
+```
+
+**Output:**
+```
+0.17547970
+0.07741569
+0.07284688
+0.07090371
+0.07005858
+0.06968885
+0.06952675
+0.06945531
+0.06942337
+0.06940859
+```
+
+<Note>
+  `m.Cleargrads()` calls `Cleargrad()` on every parameter in the model. Call it before `loss.Backward()` each iteration so gradients reflect only the current batch.
+</Note>
+
+## Optimizers
+
+All optimizers implement the same `Update(model)` interface. Swap them without changing the rest of the training loop.
+
+### SGD
+
+```go
+o := optimizer.SGD{
+    LearningRate: 0.01,
+}
+o.Update(m)
+```
+
+### Momentum
+
+```go
+o := optimizer.Momentum{
+    LearningRate: 0.01,
+    Momentum:     0.9,
+}
+o.Update(m)
+```
+
+The update rule is `v = momentum*v - lr*grad`, then `param = param + v`.
+
+### Adam
+
+```go
+o := optimizer.Adam{
+    Alpha: 0.001,
+    Beta1: 0.9,
+    Beta2: 0.999,
+}
+o.Update(m)
+```
+
+Adam maintains per-parameter first and second moment estimates and applies bias correction on each iteration.
+
+### AdamW
+
+```go
+o := optimizer.AdamW{
+    Adam: optimizer.Adam{
+        Alpha: 0.001,
+        Beta1: 0.9,
+        Beta2: 0.999,
+    },
+    WeightDecay: 0.01,
+}
+o.Update(m)
+```
+
+AdamW decouples weight decay from the gradient update, applying `lr * WeightDecay * param` as a separate decay term.
+
+## Layer-by-layer composition
+
+You can compose models from individual layers directly using `layer.Linear` and `layer.LSTM`:
+
+```go
+import (
+    L "github.com/itsubaki/autograd/layer"
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/variable"
+)
+
+// Manually apply two linear layers with ReLU in between
+l1 := L.Linear(64)
+l2 := L.Linear(1)
+
+forward := func(x *variable.Variable) *variable.Variable {
+    h := F.ReLU(l1.First(x))
+    return l2.First(h)
+}
+```
+
+`LinearT.First` is a convenience wrapper that returns the first (and only) output of `Forward`. The weight matrix is initialized lazily on the first call using Xavier initialization; the bias is initialized to zeros.
+
+## LSTM model
+
+`model.NewLSTM` creates an LSTM layer followed by a linear output layer.
+
+```go
+m := model.NewLSTM(hiddenSize, outSize)
+```
+
+The LSTM internally maintains hidden state `h` and cell state `c` across time steps. Call `m.ResetState()` at the beginning of each sequence (epoch) to clear them.
+
+### Truncated BPTT
+
+Training recurrent models on long sequences requires Truncated Backpropagation Through Time (TBPTT). Instead of accumulating loss for the entire sequence, update every `bpttLength` steps and detach the computation graph with `UnchainBackward()`.
+
+```go
+m := model.NewLSTM(hiddenSize, 1)
+o := optimizer.SGD{LearningRate: 0.01}
+
+for i := range epochs {
+    m.ResetState()  // reset hidden/cell state at epoch start
+
+    loss, count := variable.New(0), 0
+    for x, t := range dataloader.Seq2() {
+        y := m.Forward(x)
+        loss = F.Add(loss, F.MeanSquaredError(y, t))
+
+        if count++; count%bpttLength == 0 || count == dataset.N {
+            m.Cleargrads()
+            loss.Backward()
+            loss.UnchainBackward() // detach: stop gradients flowing further back
+            o.Update(m)
+        }
+    }
+}
+```
+
+`loss.UnchainBackward()` severs the links between `loss` and the preceding computation graph nodes, so the next segment's backward pass starts from the current loss node without re-traversing earlier time steps. The hidden state `h` and cell state `c` are preserved across the cut, keeping temporal context intact.
+
+<Warning>
+  Calling `m.ResetState()` inside the per-step loop would discard the hidden state every step, breaking the recurrent connection. Reset state only between sequences (epochs), not between TBPTT segments.
+</Warning>
+
+### Running the LSTM example
+
+The `cmd/lstm` program trains on a noisy sine wave and outputs predictions as CSV:
+
+```bash
+go run cmd/lstm/main.go \
+  -N 1000 \
+  -epochs 100 \
+  -batch-size 30 \
+  -hidden-size 100 \
+  -bptt-length 30 \
+  -learning-rate 0.01 \
+  -noise 0.05
+```
+
+After training, the model is evaluated on a cosine curve using `variable.Nograd()` to skip graph construction during inference:
+
+```go
+func() {
+    defer variable.Nograd().End()
+    m.ResetState()
+
+    for i, v := range xs {
+        x := variable.New(v).Reshape(1, 1)
+        y := m.Forward(x)
+        ys[i] = y.At()
+    }
+}()
+```
+
+## Loss functions
+
+| Function | Use case |
+|---|---|
+| `F.MeanSquaredError(y, t)` | Regression |
+| `F.SoftmaxCrossEntropy(x, t)` | Multi-class classification (expects logits shaped `(N, C)` and integer labels shaped `(N,)`) |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Gradient Descent" icon="arrow-down" href="/guides/gradient-descent">
+    Understand the manual update loop before using higher-level optimizers.
+  </Card>
+  <Card title="Higher-Order Gradients" icon="chart-line" href="/guides/higher-order-gradients">
+    Use CreateGraph to compute second derivatives for Newton's method.
+  </Card>
+  <Card title="Model API" icon="cube" href="/api/model">
+    Full reference for MLP and LSTM model types.
+  </Card>
+  <Card title="Optimizer API" icon="sliders" href="/api/optimizer">
+    Full reference for SGD, Adam, AdamW, and Momentum.
+  </Card>
+</CardGroup>

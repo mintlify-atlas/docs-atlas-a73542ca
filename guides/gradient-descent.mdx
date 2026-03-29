@@ -1,0 +1,172 @@
+---
+title: "Gradient Descent"
+description: "Optimize functions by iteratively updating variables in the direction of steepest descent using autograd-computed gradients."
+---
+
+Gradient descent is the core optimization loop in autograd: compute a forward pass to get a loss value, call `Backward()` to populate gradients, update the variables, and repeat.
+
+## The training loop
+
+Every gradient descent iteration follows the same three-step pattern:
+
+<Steps>
+  <Step title="Clear gradients">
+    Call `Cleargrad()` on each parameter before computing a new backward pass. Without this, gradients accumulate across iterations instead of reflecting only the current forward pass.
+  </Step>
+  <Step title="Forward and backward pass">
+    Evaluate the function to get a scalar output, then call `Backward()` to propagate gradients back through the computation graph.
+  </Step>
+  <Step title="Update parameters">
+    Subtract the scaled gradient from each parameter's data. The learning rate controls how large each step is.
+  </Step>
+</Steps>
+
+<Note>
+  `Cleargrad()` resets `variable.Grad` to `nil`. Forgetting this causes gradients to accumulate across iterations, producing incorrect updates.
+</Note>
+
+## Rosenbrock function
+
+The [Rosenbrock function](https://en.wikipedia.org/wiki/Rosenbrock_function) is a classic benchmark for optimization algorithms. Its global minimum is at `(1, 1)` with a value of `0`.
+
+```
+f(x0, x1) = 100 * (x1 - x0²)² + (x0 - 1)²
+```
+
+Starting from `(0, 2)`, gradient descent with `lr=0.001` converges toward the minimum over 10,000 iterations.
+
+```go
+package main
+
+import (
+    "fmt"
+
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/tensor"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    rosenbrock := func(x0, x1 *variable.Variable) *variable.Variable {
+        // 100 * (x1 - x0^2)^2 + (x0 - 1)^2
+        y0 := F.Pow(2.0)(F.Sub(x1, F.Pow(2.0)(x0)))
+        y1 := F.Pow(2.0)(F.AddC(-1.0, x0))
+        return F.Add(F.MulC(100, y0), y1)
+    }
+
+    update := func(lr float64, x ...*variable.Variable) {
+        for _, v := range x {
+            v.Data = tensor.F2(v.Data, v.Grad.Data, func(a, b float64) float64 {
+                return a - lr*b
+            })
+        }
+    }
+
+    x0 := variable.New(0.0)
+    x1 := variable.New(2.0)
+
+    lr := 0.001
+    iters := 10000
+
+    for i := range iters + 1 {
+        if i%1000 == 0 {
+            fmt.Println(x0, x1)
+        }
+
+        x0.Cleargrad()   // reset gradients before each iteration
+        x1.Cleargrad()
+        y := rosenbrock(x0, x1)
+        y.Backward()
+
+        update(lr, x0, x1)
+    }
+}
+```
+
+The `update` function uses `tensor.F2` to apply an element-wise operation over two tensors — here, the gradient descent step `a - lr*b`.
+
+**Output at every 1,000th iteration:**
+
+```
+variable(0) variable(2)
+variable(0.6837118569138317) variable(0.4659526837427042)
+variable(0.8263177857050957) variable(0.6820311873361097)
+variable(0.8947837494333546) variable(0.8001896451930564)
+variable(0.9334871723401226) variable(0.8711213202579401)
+variable(0.9569899983530249) variable(0.9156532462021957)
+variable(0.9718168065095137) variable(0.9443132014542008)
+variable(0.9813809710644894) variable(0.9630332658658076)
+variable(0.9876355102559093) variable(0.9753740541653942)
+variable(0.9917613994572028) variable(0.9835575421346807)
+variable(0.9944984367782456) variable(0.9890050527419593)
+```
+
+The variables converge toward the minimum at `(1, 1)`.
+
+## Matyas function
+
+The Matyas function has a global minimum at `(0, 0)`. It is useful for testing because both partial derivatives can be verified analytically.
+
+```
+f(x, y) = 0.26(x² + y²) - 0.48xy
+```
+
+```go
+matyas := func(x, y *variable.Variable) *variable.Variable {
+    // 0.26(x^2 + y^2) - 0.48xy
+    z0 := F.MulC(0.26, F.Add(F.Pow(2.0)(x), F.Pow(2.0)(y)))
+    z1 := F.MulC(0.48, F.Mul(x, y))
+    return F.Sub(z0, z1)
+}
+
+x := variable.New(1.0)
+y := variable.New(1.0)
+z := matyas(x, y)
+z.Backward()
+
+fmt.Println(x.Grad) // variable(0.040000000000000036)
+fmt.Println(y.Grad) // variable(0.040000000000000036)
+```
+
+The analytical gradients at `(1, 1)` are `∂f/∂x = 2*0.26*1 - 0.48*1 = 0.04` and `∂f/∂y = 0.04`, which matches the output.
+
+## Why Cleargrad matters
+
+Variables accumulate gradients by addition when they appear more than once in a computation graph. Consider:
+
+```go
+x := variable.New(3.0)
+y := F.Add(x, x)
+y.Backward()
+fmt.Println(x.Grad) // variable(2)  — correct
+
+// Without Cleargrad, the next backward pass adds to the existing gradient
+y = F.Add(F.Add(x, x), x)
+y.Backward()
+fmt.Println(x.Grad) // variable(5)  — WRONG: 2 + 3, not 3
+
+// With Cleargrad, only the current backward pass contributes
+x.Cleargrad()
+y = F.Add(F.Add(x, x), x)
+y.Backward()
+fmt.Println(x.Grad) // variable(3)  — correct
+```
+
+Always call `Cleargrad()` at the start of each training iteration.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Deep Learning" icon="brain" href="/guides/deep-learning">
+    Use MLP and LSTM models with SGD and Adam optimizers for end-to-end training.
+  </Card>
+  <Card title="Higher-Order Gradients" icon="chart-line" href="/guides/higher-order-gradients">
+    Compute gradients of gradients with CreateGraph for Newton's method and meta-learning.
+  </Card>
+  <Card title="Optimizers" icon="sliders" href="/api/optimizer">
+    Reference for SGD, Adam, AdamW, and Momentum optimizers.
+  </Card>
+  <Card title="Variables" icon="variable" href="/concepts/variables">
+    Understand how variables hold data and gradients in the computation graph.
+  </Card>
+</CardGroup>

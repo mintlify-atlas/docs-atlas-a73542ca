@@ -1,0 +1,403 @@
+---
+title: "function package"
+description: "Higher-level differentiable operations built on top of the variable package."
+keywords: ["function", "autograd", "neural network", "sigmoid", "relu", "softmax", "Go"]
+---
+
+The `function` package re-exports every operation from the [variable package](/api/variable) and adds higher-level neural-network primitives. You can use `function` as the single import for most forward-pass code.
+
+<Note>
+Import path: `github.com/itsubaki/autograd/function`
+</Note>
+
+---
+
+## Arithmetic
+
+These functions are aliases for the identically named functions in the `variable` package.
+
+<AccordionGroup>
+
+<Accordion title="Add / AddC">
+
+```go
+var Add  = variable.Add   // func(x ...*variable.Variable) *variable.Variable
+var AddC = variable.AddC  // func(c float64, x ...*variable.Variable) *variable.Variable
+```
+
+Element-wise addition. `AddC` adds a scalar constant.
+
+```go
+import F "github.com/itsubaki/autograd/function"
+
+y := F.Add(x1, x2)
+y := F.AddC(1.0, x)
+```
+
+</Accordion>
+
+<Accordion title="Sub / SubC">
+
+```go
+var Sub  = variable.Sub
+var SubC = variable.SubC
+```
+
+Element-wise subtraction. `SubC(c, x)` computes `c - x`.
+
+</Accordion>
+
+<Accordion title="Mul / MulC">
+
+```go
+var Mul  = variable.Mul
+var MulC = variable.MulC
+```
+
+Element-wise multiplication. `MulC(c, x)` multiplies by a scalar.
+
+</Accordion>
+
+<Accordion title="Div / DivC">
+
+```go
+var Div  = variable.Div
+var DivC = variable.DivC
+```
+
+Element-wise division. `DivC(c, x)` computes `c / x`.
+
+</Accordion>
+
+<Accordion title="Neg">
+
+```go
+var Neg = variable.Neg
+```
+
+Negates each element.
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Math
+
+<AccordionGroup>
+
+<Accordion title="Sin / Cos / Tanh">
+
+```go
+var Sin  = variable.Sin
+var Cos  = variable.Cos
+var Tanh = variable.Tanh
+```
+
+Element-wise trigonometric and hyperbolic tangent functions, all differentiable.
+
+```go
+y := F.Sin(x)
+y := F.Cos(x)
+y := F.Tanh(x)
+```
+
+</Accordion>
+
+<Accordion title="Exp / Log">
+
+```go
+var Exp = variable.Exp
+var Log = variable.Log
+```
+
+Element-wise `eˣ` and natural logarithm.
+
+</Accordion>
+
+<Accordion title="Pow / Square">
+
+```go
+var Pow    = variable.Pow    // func(p float64) func(x ...*variable.Variable) *variable.Variable
+var Square = variable.Square // func(x ...*variable.Variable) *variable.Variable
+```
+
+`Pow(p)` returns a function that raises each element to the power `p`. `Square` is a convenience for `Pow(2.0)`.
+
+```go
+y := F.Pow(3.0)(x)   // x^3
+y := F.Square(x)     // x^2
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Tensor operations
+
+<AccordionGroup>
+
+<Accordion title="Sum / SumTo / Mean / Variance">
+
+```go
+var Sum      = variable.Sum      // func(axes ...int) func(x ...*variable.Variable) *variable.Variable
+var SumTo    = variable.SumTo    // func(shape ...int) func(x ...*variable.Variable) *variable.Variable
+var Mean     = variable.Mean     // func(axes ...int) func(x ...*variable.Variable) *variable.Variable
+var Variance = variable.Variance // func(axes ...int) func(x ...*variable.Variable) *variable.Variable
+```
+
+Reduction operations. Pass axis indices to reduce along specific dimensions; omit for global reduction.
+
+```go
+total := F.Sum()(x)       // scalar sum
+rowm  := F.Mean(1)(x)     // mean along axis 1
+v     := F.Variance()(x)  // global variance
+```
+
+</Accordion>
+
+<Accordion title="BroadcastTo / Reshape / Transpose / TransposeMatMul / MatMul">
+
+```go
+var BroadcastTo     = variable.BroadcastTo
+var Reshape         = variable.Reshape
+var Transpose       = variable.Transpose
+var TransposeMatMul = variable.TransposeMatMul
+var MatMul          = variable.MatMul
+```
+
+Shape and layout operations. See [variable package](/api/variable) for full descriptions.
+
+```go
+y  := F.BroadcastTo(4, 3)(x)
+y  := F.Reshape(2, -1)(x)
+xt := F.Transpose()(x)
+y  := F.MatMul(x, w)
+```
+
+</Accordion>
+
+<Accordion title="Max / Min / Clip">
+
+```go
+var Max  = variable.Max   // func(axes ...int) func(x ...*variable.Variable) *variable.Variable
+var Min  = variable.Min   // func(axes ...int) func(x ...*variable.Variable) *variable.Variable
+var Clip = variable.Clip  // func(min, max float64) func(x ...*variable.Variable) *variable.Variable
+```
+
+```go
+m := F.Max(1)(x)
+c := F.Clip(0.0, 1.0)(x)
+```
+
+</Accordion>
+
+<Accordion title="GetItem / Concat / Split">
+
+```go
+var GetItem = variable.GetItem // func(indices []int, axis int) func(x ...*variable.Variable) *variable.Variable
+var Concat  = variable.Concat  // func(axis int) func(x ...*variable.Variable) *variable.Variable
+var Split   = variable.Split   // func(size []int, axis int) func(x ...*variable.Variable) []*variable.Variable
+```
+
+Indexing and combining operations.
+
+```go
+rows  := F.GetItem([]int{0, 2}, 0)(x)
+cat   := F.Concat(1)(x1, x2)
+parts := F.Split([]int{3, 3}, 0)(x)
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Neural network functions
+
+### Sigmoid
+
+```go
+func Sigmoid(x ...*variable.Variable) *variable.Variable
+```
+
+Numerically stable sigmoid using the identity `σ(x) = 0.5 + 0.5·tanh(0.5x)`.
+
+Backward: `gy * y * (1 - y)`.
+
+```go
+y := F.Sigmoid(x)
+```
+
+<Tip>
+Use `Sigmoid` instead of `SigmoidSimple` in production — it avoids overflow for large inputs.
+</Tip>
+
+---
+
+### ReLU
+
+```go
+func ReLU(x ...*variable.Variable) *variable.Variable
+```
+
+Rectified Linear Unit: `y = max(0, x)`. Gradient is 1 where input is positive, 0 elsewhere.
+
+```go
+y := F.ReLU(x)
+```
+
+---
+
+### Softmax
+
+```go
+func Softmax(axis int) func(x ...*variable.Variable) *variable.Variable
+```
+
+Numerically stable softmax along the given axis: subtracts the per-row maximum before exponentiation.
+
+<ParamField path="axis" type="int" required>
+  Axis along which to normalise probabilities. Typically `1` for `(N, C)` logit tensors.
+</ParamField>
+
+```go
+probs := F.Softmax(1)(logits)
+```
+
+---
+
+### SoftmaxCrossEntropy
+
+```go
+func SoftmaxCrossEntropy(x ...*variable.Variable) *variable.Variable
+```
+
+Combined softmax + negative log-likelihood loss. Expects:
+
+- `x[0]`: logits with shape `(N, C)`
+- `x[1]`: integer class labels with shape `(N,)` (stored as `float64`)
+
+Returns a scalar loss `-(1/N) * Σ log p(y_i)`.
+
+```go
+loss := F.SoftmaxCrossEntropy(logits, labels)
+loss.Backward()
+```
+
+<Note>
+Passing raw logits (before softmax) is both numerically stable and more efficient than applying `Softmax` first.
+</Note>
+
+---
+
+### Linear
+
+```go
+func Linear(x ...*variable.Variable) *variable.Variable
+```
+
+Affine transformation: `y = x @ w [+ b]`.
+
+- `x[0]`: input `(N, in_features)`
+- `x[1]`: weight `(in_features, out_features)`
+- `x[2]` (optional): bias `(1, out_features)`
+
+```go
+y := F.Linear(x, w, b)   // with bias
+y := F.Linear(x, w)      // no bias
+```
+
+<Note>
+For a higher-level layer that manages its own parameters, use `layer.Linear`. See [layer package](/api/layer).
+</Note>
+
+---
+
+### MeanSquaredError
+
+```go
+func MeanSquaredError(x ...*variable.Variable) *variable.Variable
+```
+
+Mean squared error: `(1/N) * Σ (x0 - x1)²`.
+
+```go
+loss := F.MeanSquaredError(pred, target)
+```
+
+---
+
+### DropoutSimple
+
+```go
+func DropoutSimple(ratio float64, s ...randv2.Source) func(x ...*variable.Variable) *variable.Variable
+```
+
+Inverted dropout. At training time, randomly zeroes elements with probability `ratio` and scales surviving elements by `1/(1-ratio)`. At test time (when `variable.Config.Train == false`) returns the input unchanged.
+
+<ParamField path="ratio" type="float64" required>
+  Probability of zeroing each element, e.g. `0.5`.
+</ParamField>
+
+<ParamField path="s" type="...randv2.Source">
+  Optional random source for reproducibility.
+</ParamField>
+
+```go
+dropout := F.DropoutSimple(0.5)
+y := dropout(x)
+
+// In test mode, dropout is bypassed
+span := variable.TestMode()
+defer span.End()
+y := dropout(x) // returns x unchanged
+```
+
+---
+
+### Accuracy
+
+```go
+func Accuracy(y, t *variable.Variable) *variable.Variable
+```
+
+Computes classification accuracy as the fraction of samples where `argmax(y) == t`. The return value is not differentiable.
+
+<ParamField path="y" type="*variable.Variable" required>
+  Predicted logits or probabilities with shape `(N, C)`.
+</ParamField>
+
+<ParamField path="t" type="*variable.Variable" required>
+  Integer class labels with shape `(N,)`.
+</ParamField>
+
+```go
+acc := F.Accuracy(y, t)
+fmt.Printf("accuracy: %.2f\n", acc.At())
+```
+
+---
+
+## Simple / reference implementations
+
+These functions implement the same operations using basic differentiable primitives. They are useful for understanding the math or for testing, but prefer the non-`Simple` variants in practice.
+
+| Function | Equivalent to |
+|---|---|
+| `SigmoidSimple(x)` | `1 / (1 + exp(-x))` |
+| `SoftmaxSimple(x, axis)` | `exp(x) / sum(exp(x))` |
+| `LinearSimple(x, w, b...)` | `x @ w + b` |
+| `MeanSquaredErrorSimple(x0, x1)` | `(1/N) * sum((x0-x1)²)` |
+
+```go
+// reference sigmoid
+y := F.SigmoidSimple(x)
+
+// reference linear (saves memory by clearing intermediate)
+y := F.LinearSimple(x, w, b)
+```

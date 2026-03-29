@@ -1,0 +1,289 @@
+---
+title: "model package"
+description: "High-level neural network model types built on top of the layer package."
+keywords: ["model", "MLP", "LSTM", "neural network", "forward pass"]
+---
+
+The `model` package provides composable neural network models — `MLP` and `LSTM` — built from [layer](/api/layer) primitives. Each model embeds `Model`, which manages a slice of layers and exposes a unified parameter and gradient interface consumed by [optimizers](/api/optimizer).
+
+## Layer interface
+
+Every element in `Model.Layers` must satisfy the `Layer` interface. The built-in layer types (`LinearT`, `RNNT`, `LSTMT`) all implement it.
+
+```go
+type Layer interface {
+    First(x ...*variable.Variable) *variable.Variable
+    Forward(x ...*variable.Variable) []*variable.Variable
+    Params() layer.Parameters
+    Cleargrads()
+}
+```
+
+<ResponseField name="First" type="func(x ...*variable.Variable) *variable.Variable">
+  Runs the layer forward and returns the first output variable. Convenience wrapper around `Forward`.
+</ResponseField>
+
+<ResponseField name="Forward" type="func(x ...*variable.Variable) []*variable.Variable">
+  Runs the layer forward and returns all output variables.
+</ResponseField>
+
+<ResponseField name="Params" type="func() layer.Parameters">
+  Returns the learnable parameters (`layer.Parameters`) for this layer.
+</ResponseField>
+
+<ResponseField name="Cleargrads" type="func()">
+  Sets all parameter gradients to `nil`, preparing for the next forward/backward pass.
+</ResponseField>
+
+---
+
+## Model
+
+`Model` is the base struct embedded by `MLP` and `LSTM`. It aggregates parameters and gradient clearing across all its layers.
+
+```go
+type Model struct {
+    Layers []Layer
+}
+```
+
+<ResponseField name="Layers" type="[]Layer">
+  The ordered list of layers that make up the model. You can inspect or replace layers directly.
+</ResponseField>
+
+### Methods
+
+#### Params
+
+```go
+func (m Model) Params() layer.Parameters
+```
+
+Returns a merged `layer.Parameters` map from every layer. Keys are prefixed with the layer index (`"0.W"`, `"1.b"`, etc.) so parameter names remain unique across layers.
+
+#### Cleargrads
+
+```go
+func (m *Model) Cleargrads()
+```
+
+Calls `Cleargrads()` on every layer, zeroing all gradient tensors. Call this before each backward pass to prevent gradient accumulation.
+
+---
+
+## Activation
+
+`Activation` is the function type used for inter-layer activations in `MLP`.
+
+```go
+type Activation func(x ...*variable.Variable) *variable.Variable
+```
+
+Any function with this signature can be used as an activation. The standard library activations (`F.Sigmoid`, `F.ReLU`, `F.Tanh`, `F.Softmax(axis)`) all satisfy this type.
+
+---
+
+## MLP
+
+`MLP` is a multi-layer perceptron with a configurable number of hidden layers and a shared activation function applied between each layer. The final layer has no activation.
+
+```go
+type MLP struct {
+    Activation Activation
+    Model
+}
+```
+
+<ResponseField name="Activation" type="Activation">
+  The activation function applied after every layer except the last. Defaults to `F.Sigmoid`.
+</ResponseField>
+
+### NewMLP
+
+```go
+func NewMLP(outSize []int, opts ...MLPOptionFunc) *MLP
+```
+
+Creates an MLP where each element of `outSize` defines the output size of a `Linear` layer.
+
+<ParamField path="outSize" type="[]int" required>
+  Output sizes for each layer. `len(outSize)` determines the depth of the network.
+</ParamField>
+
+<ParamField path="opts" type="...MLPOptionFunc">
+  Option functions that customize the MLP before the layers are initialized.
+</ParamField>
+
+<Note>
+  Layer weights are initialized with the default random source. Use `WithMLPSource` to set a deterministic source for reproducible experiments.
+</Note>
+
+### Option functions
+
+#### WithMLPActivation
+
+```go
+func WithMLPActivation(activation Activation) MLPOptionFunc
+```
+
+Overrides the default `F.Sigmoid` activation with any `Activation`-compatible function.
+
+#### WithMLPSource
+
+```go
+func WithMLPSource(s randv2.Source) MLPOptionFunc
+```
+
+Sets the random source (`math/rand/v2.Source`) used to initialize layer weights. Pass a seeded source for reproducible results.
+
+### Forward
+
+```go
+func (m *MLP) Forward(x *variable.Variable) *variable.Variable
+```
+
+Runs the input `x` through every hidden layer with the configured activation, then through the final layer with no activation.
+
+<ParamField path="x" type="*variable.Variable" required>
+  The input variable. Shape must be compatible with the first layer's weight matrix.
+</ParamField>
+
+---
+
+## LSTM
+
+`LSTM` wraps a single `layer.LSTMT` followed by a `layer.LinearT` projection. It exposes a stateful forward pass and a method to reset the hidden and cell states between sequences.
+
+```go
+type LSTM struct {
+    Model
+}
+```
+
+### NewLSTM
+
+```go
+func NewLSTM(hiddenSize, outSize int, opts ...LSTMOptionFunc) *LSTM
+```
+
+<ParamField path="hiddenSize" type="int" required>
+  The dimensionality of the LSTM hidden state.
+</ParamField>
+
+<ParamField path="outSize" type="int" required>
+  The output size of the projection `Linear` layer that follows the LSTM.
+</ParamField>
+
+<ParamField path="opts" type="...LSTMOptionFunc">
+  Option functions applied before the layers are constructed.
+</ParamField>
+
+### Option functions
+
+#### WithLSTMSource
+
+```go
+func WithLSTMSource(s randv2.Source) LSTMOptionFunc
+```
+
+Sets the random source (`math/rand/v2.Source`) for initializing both the LSTM and projection layer weights.
+
+### Forward
+
+```go
+func (m *LSTM) Forward(x *variable.Variable) *variable.Variable
+```
+
+Runs `x` through the LSTM layer, then through the projection layer. The LSTM hidden and cell states are carried forward across calls — reset them with `ResetState` between sequences.
+
+### ResetState
+
+```go
+func (m *LSTM) ResetState()
+```
+
+Clears the LSTM hidden state (`h`) and cell state (`c`). Call this at the start of each new sequence during training or inference.
+
+---
+
+## Examples
+
+### Training an MLP
+
+```go
+package main
+
+import (
+    "fmt"
+
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/model"
+    "github.com/itsubaki/autograd/optimizer"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    // Two hidden layers of size 10, output size 1
+    mlp := model.NewMLP([]int{10, 10, 1})
+
+    opt := &optimizer.SGD{LearningRate: 0.01}
+
+    x := variable.New(1.0, 2.0, 3.0)
+    t := variable.New(0.0, 1.0, 0.0)
+
+    for i := range 100 {
+        y := mlp.Forward(x)
+        loss := F.MeanSquaredError(y, t)
+
+        mlp.Cleargrads()
+        loss.Backward()
+        opt.Update(mlp)
+
+        if i%10 == 0 {
+            fmt.Println("loss:", loss.Data)
+        }
+    }
+}
+```
+
+### Using ReLU activation
+
+```go
+mlp := model.NewMLP(
+    []int{64, 64, 10},
+    model.WithMLPActivation(F.ReLU),
+)
+```
+
+### Training an LSTM on a sequence
+
+```go
+lstm := model.NewLSTM(64, 1)
+opt := &optimizer.Adam{Alpha: 0.001, Beta1: 0.9, Beta2: 0.999}
+
+for epoch := range 10 {
+    lstm.ResetState()
+    lstm.Cleargrads()
+
+    var loss *variable.Variable
+    for _, x := range sequence {
+        y := lstm.Forward(x)
+        loss = F.MeanSquaredError(y, target)
+    }
+
+    loss.Backward()
+    opt.Update(lstm)
+}
+```
+
+<Tip>
+  Call `ResetState()` at the start of each new sequence so the LSTM does not carry state from the previous sequence into the next.
+</Tip>
+
+---
+
+## See also
+
+- [layer package](/api/layer) — the underlying layer primitives (`Linear`, `LSTM`, etc.)
+- [optimizer package](/api/optimizer) — update model parameters after each backward pass
+- [Guides: deep learning](/guides/deep-learning) — end-to-end training walkthrough

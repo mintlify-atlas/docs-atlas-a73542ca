@@ -1,0 +1,70 @@
+---
+title: 'Introduction'
+description: 'autograd is a pure Go automatic differentiation library with no external dependencies.'
+---
+
+autograd brings automatic differentiation to Go. Define a computation using ordinary Go code, call `Backward()`, and the library propagates gradients through the entire computation graph for you — no configuration, no external dependencies, no C bindings.
+
+It is a Go port of the ideas from [oreilly-japan/deep-learning-from-scratch-3](https://github.com/oreilly-japan/deep-learning-from-scratch-3) (DeZero), adapted to idiomatic Go conventions.
+
+## Key features
+
+**Pure Go, zero dependencies**
+The entire library is implemented using only the Go standard library. The `go.mod` file has no `require` directives. This keeps builds fast, reproducible, and easy to vendor.
+
+**Define-by-run computation graph**
+The computation graph is built dynamically as your code runs. There is no separate "compile" step or graph declaration phase. You write regular Go functions; the graph emerges from the call trace.
+
+**Reverse-mode automatic differentiation**
+`Backward()` traverses the computation graph in reverse, accumulating gradients at every input variable via the chain rule. Gradient accumulation handles variables reused multiple times in the same expression correctly.
+
+**Higher-order gradients**
+Pass `variable.Opts{CreateGraph: true}` to `Backward()` and the backward pass itself becomes differentiable. This enables second-order optimizers (Newton's method), meta-learning, and higher-order derivative analysis.
+
+**`NoGrad` and `TestMode` contexts**
+Wrap inference or evaluation code in `variable.Nograd()` to skip graph construction entirely, reducing memory usage. Use `variable.TestMode()` to disable stochastic layers such as dropout during evaluation.
+
+**Built-in layers, models, and optimizers**
+The library ships with dense (Linear) layers, RNN and LSTM cells, multi-layer perceptrons, and optimizers (SGD, Momentum, Adam, AdamW). These are built on the same `Variable`/`Function` primitives, so gradients flow through them automatically.
+
+**Dot graph visualization**
+Export any computation graph to Graphviz DOT format for visual debugging of network architecture and gradient flow.
+
+## How it works
+
+Every value is wrapped in a `*variable.Variable`. When you apply a function (such as `F.Sin`, `F.Mul`, or `F.MatMul`), the library records the function and its inputs on the output variable's `Creator` field. Calling `Backward()` on a scalar output walks this chain in reverse generation order, calling each function's backward implementation and accumulating `Grad` on every input variable.
+
+```
+forward:  x → [Sin] → y
+backward: x.Grad ← [Sin.Backward] ← y.Grad (= 1)
+```
+
+## Packages
+
+| Package | Purpose |
+|---|---|
+| `variable` | `Variable` type, all differentiable functions, `Nograd`/`TestMode` |
+| `function` | Convenience aliases re-exporting everything from `variable`, plus higher-level neural-net ops |
+| `tensor` | N-dimensional array operations (the raw data layer) |
+| `layer` | Parameterized layers: `Linear`, `RNN`, `LSTM` |
+| `model` | Composed models: `MLP`, `LSTM` |
+| `optimizer` | SGD, Momentum, Adam, AdamW |
+| `numerical` | Numerical differentiation for gradient checking |
+| `hook` | Gradient post-processing hooks: `WeightDecay`, `ClipGrad` |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install the library and compute your first gradient in under five minutes.
+  </Card>
+  <Card title="Variables" icon="cube" href="/concepts/variables">
+    Understand how `Variable` wraps data and accumulates gradients.
+  </Card>
+  <Card title="Functions" icon="function" href="/concepts/functions">
+    Learn how differentiable functions are defined and composed.
+  </Card>
+  <Card title="How autograd works" icon="diagram-project" href="/concepts/autograd">
+    A deeper look at the computation graph and backpropagation algorithm.
+  </Card>
+</CardGroup>

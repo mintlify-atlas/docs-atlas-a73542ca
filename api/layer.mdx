@@ -1,0 +1,338 @@
+---
+title: "layer package"
+description: "Stateful neural network layers with learnable parameters."
+keywords: ["layer", "linear", "rnn", "lstm", "parameters", "autograd", "Go"]
+---
+
+The `layer` package provides stateful neural network building blocks. Each layer manages its own learnable parameters and exposes a unified interface for forward passes and gradient clearing.
+
+<Note>
+Import path: `github.com/itsubaki/autograd/layer`
+</Note>
+
+---
+
+## Layer interface
+
+```go
+type Layer interface {
+    First(x ...*variable.Variable) *variable.Variable
+    Forward(x ...*variable.Variable) []*variable.Variable
+    Params() Parameters
+    Cleargrads()
+}
+```
+
+<ResponseField name="First" type="func(x ...*variable.Variable) *variable.Variable">
+  Convenience wrapper: calls `Forward` and returns only the first output variable.
+</ResponseField>
+
+<ResponseField name="Forward" type="func(x ...*variable.Variable) []*variable.Variable">
+  Runs the layer's forward pass and returns all output variables.
+</ResponseField>
+
+<ResponseField name="Params" type="func() Parameters">
+  Returns the layer's learnable parameters as a `Parameters` map keyed by name.
+</ResponseField>
+
+<ResponseField name="Cleargrads" type="func()">
+  Calls `Cleargrad` on every parameter. Call this before each training step.
+</ResponseField>
+
+---
+
+## Parameter type
+
+```go
+type Parameter = *variable.Variable  // alias
+
+type Parameters map[string]Parameter
+```
+
+`Parameters` is a named map of `*variable.Variable` values. It satisfies the `Layer` interface so it can be composed into larger structures.
+
+```go
+func (p Parameters) Add(name string, param Parameter)
+func (p Parameters) Delete(name string)
+func (p Parameters) Params() Parameters
+func (p Parameters) Cleargrads()
+func (p Parameters) Seq2() iter.Seq2[string, Parameter]
+```
+
+<ResponseField name="Add" type="func(name string, param Parameter)">
+  Registers a parameter under `name` and sets `param.Name = name`.
+</ResponseField>
+
+<ResponseField name="Delete" type="func(name string)">
+  Removes the parameter with the given name.
+</ResponseField>
+
+<ResponseField name="Seq2" type="func() iter.Seq2[string, Parameter]">
+  Returns a sorted iterator over `(name, parameter)` pairs. Useful for passing all parameters to an optimizer.
+</ResponseField>
+
+```go
+for name, p := range layer.Params().Seq2() {
+    fmt.Println(name, p.Grad)
+}
+```
+
+---
+
+## Layers map
+
+```go
+type Layers map[string]Layer
+```
+
+A named collection of `Layer` values. `RNNT` and `LSTMT` use this internally to organise their sub-layers.
+
+```go
+func (l Layers) Add(name string, layer Layer)
+func (l Layers) Params() Parameters
+func (l Layers) Cleargrads()
+```
+
+`Params` aggregates all parameters from every sub-layer, prefixing names with `"layerName."`.
+
+---
+
+## LinearT
+
+A fully-connected (affine) layer: `y = x @ W + b`.
+
+### Constructor
+
+```go
+func Linear(outSize int, opts ...OptionFunc) *LinearT
+```
+
+<ParamField path="outSize" type="int" required>
+  Number of output features.
+</ParamField>
+
+<ParamField path="opts" type="...OptionFunc">
+  Option functions to configure the layer.
+
+  <Expandable title="Available options">
+    <ResponseField name="WithSource(s randv2.Source)" type="OptionFunc">
+      Sets the random source used to initialise weights.
+    </ResponseField>
+    <ResponseField name="WithInSize(inSize int)" type="OptionFunc">
+      Pre-initialises the weight matrix for a known input size. Without this option, weights are initialised lazily on the first forward pass.
+    </ResponseField>
+    <ResponseField name="WithNoBias()" type="OptionFunc">
+      Creates the layer without a bias term.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Lazy weight initialisation
+
+When `WithInSize` is not supplied, the weight matrix `W` is initialised using Xavier/Glorot uniform scaling on the first call to `Forward`, inferring `inSize` from the last dimension of the input.
+
+```go
+// Output size 10; weights initialised on first forward call
+l := layer.Linear(10)
+
+// Output size 10; weights pre-initialised (inSize = 4)
+l := layer.Linear(10, layer.WithInSize(4))
+
+// Without bias
+l := layer.Linear(10, layer.WithNoBias())
+```
+
+### Forward pass
+
+```go
+func (l *LinearT) Forward(x ...*variable.Variable) []*variable.Variable
+func (l *LinearT) First(x ...*variable.Variable) *variable.Variable
+```
+
+Applies `y = x @ W + b` (or `y = x @ W` if no bias). The weight matrix is Xavier-initialised on the first call if not already present.
+
+```go
+x := variable.New(1.0, 2.0, 3.0, 4.0)
+x = x.Reshape(1, 4)
+
+l := layer.Linear(8)
+y := l.First(x)   // shape [1, 8]
+```
+
+### Parameters
+
+`LinearT.Params()` returns entries for `"w"` (weights) and, if not disabled, `"b"` (bias).
+
+---
+
+## RNNT
+
+A simple Elman recurrent network: `h_t = tanh(x_t @ W_xh + h_{t-1} @ W_hh + b)`.
+
+### Constructor
+
+```go
+func RNN(hiddenSize int, opts ...RNNOptionFunc) *RNNT
+```
+
+<ParamField path="hiddenSize" type="int" required>
+  Number of hidden units.
+</ParamField>
+
+<ParamField path="opts" type="...RNNOptionFunc">
+  <Expandable title="Available options">
+    <ResponseField name="WithRNNSource(s randv2.Source)" type="RNNOptionFunc">
+      Random source for weight initialisation.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+The constructor creates two internal `LinearT` layers:
+
+- `"x2h"` — maps input to hidden state (with bias)
+- `"h2h"` — maps hidden to hidden state (no bias)
+
+### Forward pass
+
+```go
+func (l *RNNT) Forward(x ...*variable.Variable) []*variable.Variable
+func (l *RNNT) First(x ...*variable.Variable) *variable.Variable
+```
+
+Processes one time step. The hidden state `h` is stored internally and used in subsequent calls.
+
+```go
+rnn := layer.RNN(64)
+
+for _, xt := range sequence {
+    h := rnn.First(xt)
+}
+```
+
+### ResetState
+
+```go
+func (l *RNNT) ResetState()
+```
+
+Sets the internal hidden state `h` to `nil`. Call this between sequences.
+
+```go
+rnn.ResetState()
+for _, xt := range newSequence {
+    h := rnn.First(xt)
+}
+```
+
+<Tip>
+Always call `ResetState` between independent sequences to avoid incorrect gradient flow across sequence boundaries.
+</Tip>
+
+---
+
+## LSTMT
+
+Long Short-Term Memory cell with forget, input, output, and update gates.
+
+### Constructor
+
+```go
+func LSTM(hiddenSize int, opts ...LSTMOptionFunc) *LSTMT
+```
+
+<ParamField path="hiddenSize" type="int" required>
+  Number of hidden units.
+</ParamField>
+
+<ParamField path="opts" type="...LSTMOptionFunc">
+  <Expandable title="Available options">
+    <ResponseField name="WithLSTMSource(s randv2.Source)" type="LSTMOptionFunc">
+      Random source for weight initialisation.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+The constructor creates eight internal `LinearT` layers — one for each gate (f, i, o, u) × direction (x→h, h→h):
+
+- `"x2f"`, `"x2i"`, `"x2o"`, `"x2u"` — input projections (with bias)
+- `"h2f"`, `"h2i"`, `"h2o"`, `"h2u"` — recurrent projections (no bias)
+
+### Forward pass
+
+```go
+func (l *LSTMT) Forward(x ...*variable.Variable) []*variable.Variable
+func (l *LSTMT) First(x ...*variable.Variable) *variable.Variable
+```
+
+Processes one time step and returns the new hidden state `h`. The cell state `c` is updated internally.
+
+Gate equations:
+
+```
+f = σ(x·W_xf + h·W_hf)     # forget gate
+i = σ(x·W_xi + h·W_hi)     # input gate
+o = σ(x·W_xo + h·W_ho)     # output gate
+u = tanh(x·W_xu + h·W_hu)  # update gate
+c = f*c + i*u               # new cell state
+h = o * tanh(c)             # new hidden state
+```
+
+```go
+lstm := layer.LSTM(128)
+
+for _, xt := range sequence {
+    h := lstm.First(xt)
+}
+```
+
+### ResetState
+
+```go
+func (l *LSTMT) ResetState()
+```
+
+Resets both the hidden state `h` and the cell state `c` to `nil`.
+
+```go
+lstm.ResetState()
+```
+
+---
+
+## Full example
+
+```go
+package main
+
+import (
+    "fmt"
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/layer"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    // Two-layer MLP
+    l1 := layer.Linear(16)
+    l2 := layer.Linear(1)
+
+    // Forward pass
+    x := variable.Randn([]int{4, 8})    // batch of 4, 8 features
+    h := F.ReLU(l1.First(x))
+    y := l2.First(h)
+
+    // Compute loss
+    target := variable.Zeros(4, 1)
+    loss := F.MeanSquaredError(y, target)
+
+    // Backward pass
+    l1.Cleargrads()
+    l2.Cleargrads()
+    loss.Backward()
+
+    // Inspect gradients
+    for name, p := range l1.Params().Seq2() {
+        fmt.Println(name, p.Grad.Shape())
+    }
+}
+```

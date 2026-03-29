@@ -1,0 +1,378 @@
+---
+title: "tensor package"
+description: "Generic multi-dimensional array with broadcasting support, used as the data backend for Variable."
+keywords: ["tensor", "ndarray", "autograd", "Go", "generics"]
+---
+
+The `tensor` package provides `Tensor[T]`, a generic multi-dimensional array that is the data backend for `Variable`. It handles memory layout, broadcasting, and all raw numeric operations. You will typically interact with tensors indirectly through the [variable](/api/variable) and [function](/api/function) packages.
+
+<Note>
+Import path: `github.com/itsubaki/autograd/tensor`
+</Note>
+
+---
+
+## Tensor struct
+
+```go
+type Tensor[T Number] struct {
+    Shape    []int
+    Stride   []int
+    Data     []T
+    ReadOnly bool
+}
+```
+
+<ResponseField name="Shape" type="[]int">
+  Size of each dimension. A scalar tensor has `Shape == nil`.
+</ResponseField>
+
+<ResponseField name="Stride" type="[]int">
+  Step in `Data` for a unit increment along each dimension. Non-contiguous views (created by `Transpose`, `BroadcastTo`) have irregular strides and share the underlying `Data` slice.
+</ResponseField>
+
+<ResponseField name="Data" type="[]T">
+  Flat backing slice. Physical layout is row-major for contiguous tensors.
+</ResponseField>
+
+<ResponseField name="ReadOnly" type="bool">
+  When `true`, calls to `Set` or `AddAt` panic. Set automatically on broadcast views.
+</ResponseField>
+
+The generic constraint is:
+
+```go
+type Number interface {
+    ~int | ~float64
+}
+```
+
+---
+
+## Constructors
+
+<AccordionGroup>
+
+<Accordion title="New">
+
+```go
+func New[T Number](shape []int, data []T) *Tensor[T]
+```
+
+Creates a tensor with the given shape, sharing the provided data slice (no copy).
+
+```go
+t := tensor.New([]int{2, 3}, []float64{1, 2, 3, 4, 5, 6})
+```
+
+</Accordion>
+
+<Accordion title="Zeros / Ones / Full">
+
+```go
+func Zeros[T Number](shape ...int) *Tensor[T]
+func Ones[T Number](shape ...int) *Tensor[T]
+func Full[T Number](shape []int, value T) *Tensor[T]
+```
+
+Create tensors filled with zeros, ones, or a constant value.
+
+```go
+z := tensor.Zeros[float64](3, 4)
+o := tensor.Ones[float64](2, 2)
+f := tensor.Full([]int{2}, 7.0)
+```
+
+</Accordion>
+
+<Accordion title="Rand / Randn">
+
+```go
+func Rand(shape []int, s ...randv2.Source) *Tensor[float64]
+func Randn(shape []int, s ...randv2.Source) *Tensor[float64]
+```
+
+`Rand` fills with uniform `[0.0, 1.0)` values; `Randn` fills with standard-normal values. Pass a `randv2.Source` for reproducibility.
+
+```go
+r := tensor.Rand([]int{3, 3})
+n := tensor.Randn([]int{2, 4})
+```
+
+</Accordion>
+
+<Accordion title="ZeroLike / OneLike">
+
+```go
+func ZeroLike[T Number](v *Tensor[T]) *Tensor[T]
+func OneLike[T Number](v *Tensor[T]) *Tensor[T]
+```
+
+Return new tensors with the same shape as `v` filled with zeros or ones.
+
+</Accordion>
+
+<Accordion title="Clone / Reshape / Ravel / Flatten">
+
+```go
+func Clone[T Number](v *Tensor[T]) *Tensor[T]
+func Reshape[T Number](v *Tensor[T], shape ...int) *Tensor[T]
+func Ravel[T Number](v *Tensor[T]) *Tensor[T]
+func Flatten[T Number](v *Tensor[T]) *Tensor[T]
+```
+
+`Clone` always returns a contiguous copy. `Reshape` returns a view when possible; use `-1` in `shape` to infer one dimension. `Ravel` returns a view if the tensor is contiguous, otherwise copies. `Flatten` always copies.
+
+```go
+c := tensor.Clone(t)
+r := tensor.Reshape(t, 2, -1)
+f := tensor.Flatten(t) // always a copy
+```
+
+</Accordion>
+
+<Accordion title="Arange / Linspace">
+
+```go
+func Arange[T Number](start, stop T, step ...T) *Tensor[T]
+func Linspace(start, stop float64, n int) *Tensor[float64]
+```
+
+Create 1-D tensors with evenly spaced values.
+
+```go
+x := tensor.Arange(0.0, 5.0, 1.0)     // [0, 1, 2, 3, 4]
+x := tensor.Linspace(0.0, 1.0, 5)     // [0, 0.25, 0.5, 0.75, 1]
+```
+
+</Accordion>
+
+<Accordion title="Identity / Eye / Scalar">
+
+```go
+func Identity[T Number](rows, cols int) *Tensor[T]
+func Eye[T Number](n int) *Tensor[T]
+func Scalar[T Number](v T) *Tensor[T]
+```
+
+`Identity` creates a rectangular identity matrix. `Eye` creates a square one. `Scalar` wraps a single value.
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Methods
+
+### NumDims
+
+```go
+func (v *Tensor[T]) NumDims() int
+```
+
+Returns the number of dimensions (rank).
+
+---
+
+### Size
+
+```go
+func (v *Tensor[T]) Size() int
+```
+
+Returns the total number of elements (product of shape dimensions).
+
+---
+
+### At
+
+```go
+func (v *Tensor[T]) At(indices ...int) T
+```
+
+Returns the element at the given multi-dimensional indices. With no arguments, returns the first element (useful for scalars).
+
+```go
+val := t.At(1, 2)
+scalar := t.At()
+```
+
+---
+
+### Set
+
+```go
+func (v *Tensor[T]) Set(indices []int, value T)
+```
+
+Sets the element at the given indices. Panics if the tensor is `ReadOnly`.
+
+---
+
+### AddAt
+
+```go
+func (v *Tensor[T]) AddAt(indices []int, value T)
+```
+
+Adds `value` to the element at the given indices in place. Panics if `ReadOnly`.
+
+---
+
+### Seq2
+
+```go
+func (v *Tensor[T]) Seq2() iter.Seq2[int, []T]
+```
+
+Returns an iterator over rows. For a 2-D tensor this yields `(rowIndex, rowSlice)` pairs.
+
+---
+
+## Element-wise functions
+
+### F (unary)
+
+```go
+func F[T, U Number](v *Tensor[T], f func(a T) U) *Tensor[U]
+```
+
+Applies a unary function to every element. Supports type-changing transforms (e.g., `float64 → int`).
+
+```go
+abs := tensor.F(t, math.Abs)
+bits := tensor.F(t, func(x float64) int { return int(x) })
+```
+
+---
+
+### F2 (binary)
+
+```go
+func F2[T, U Number](v, w *Tensor[T], f func(a, b T) U) *Tensor[U]
+```
+
+Applies a binary function element-wise over `v` and `w`. Both tensors are broadcast to a common shape before the operation.
+
+```go
+max2 := tensor.F2(a, b, func(x, y float64) float64 {
+    if x > y { return x }
+    return y
+})
+```
+
+---
+
+## Arithmetic operations
+
+All operations return new tensors and broadcast automatically.
+
+| Function | Description |
+|---|---|
+| `Add[T](v, w)` | `v + w` |
+| `Sub[T](v, w)` | `v - w` |
+| `Mul[T](v, w)` | `v * w` (element-wise) |
+| `Div[T](v, w)` | `v / w` |
+| `AddC[T](c, v)` | `c + v` |
+| `SubC[T](c, v)` | `c - v` |
+| `MulC[T](c, v)` | `c * v` |
+| `Pow(p, v)` | `v^p` |
+| `Sqrt(v)` | `√v` |
+| `Exp(v)` | `eᵛ` |
+| `Log(v)` | `ln(v)` |
+| `Sin(v)` | `sin(v)` |
+| `Cos(v)` | `cos(v)` |
+| `Tanh(v)` | `tanh(v)` |
+| `Clip[T](v, min, max)` | Clamp to `[min, max]` |
+| `Mask[T](v, f)` | `1` where `f(x)` is true, else `0` |
+
+---
+
+## Reduction operations
+
+| Function | Description |
+|---|---|
+| `Sum[T](v, axes...)` | Sum over axes (or all elements) |
+| `Max(v, axes...)` | Max over axes |
+| `Min(v, axes...)` | Min over axes |
+| `Mean[T](v, axes...)` | Mean over axes |
+| `Variance(v, axes...)` | Variance over axes |
+| `StdDev(v, axes...)` | Standard deviation |
+| `Argmax[T](v, axis)` | Index of max along axis → `*Tensor[int]` |
+
+---
+
+## Shape operations
+
+| Function | Description |
+|---|---|
+| `Reshape[T](v, shape...)` | Change shape (view or copy) |
+| `Transpose[T](v, axes...)` | Permute axes (view) |
+| `BroadcastTo[T](v, shape...)` | Broadcast to shape (view) |
+| `Broadcast[T](v, w)` | Broadcast both to common shape |
+| `SumTo[N](v, shape...)` | Sum to target shape |
+| `Squeeze[T](v, axes...)` | Remove size-1 dimensions |
+| `Expand[T](v, axis)` | Insert size-1 dimension |
+| `KeepDims(shape, axes)` | Replace reduced axes with 1 |
+
+---
+
+## Combining and indexing
+
+| Function | Description |
+|---|---|
+| `Concat[T](v, axis)` | Concatenate along axis |
+| `Split[T](v, size, axis)` | Split into parts |
+| `Stack[T](v, axis)` | Stack along new axis |
+| `Take[T](v, axis, indices)` | Gather elements at indices |
+| `ScatterAdd[T](v, w, axis, indices)` | Scatter-add `w` into `v` |
+| `Flip[T](v, axes...)` | Reverse elements along axes |
+| `Tile[T](v, n, axis)` | Repeat `v` n times along axis |
+| `Repeat[T](v, n, axis)` | Repeat each element n times |
+| `Tril[T](v, k...)` | Lower-triangular mask |
+
+---
+
+## Type conversion utilities
+
+```go
+func Int[T Number](v *Tensor[T]) *Tensor[int]
+func Float64[T Number](v *Tensor[T]) *Tensor[float64]
+```
+
+Cast all elements to `int` or `float64`.
+
+---
+
+## Comparison and utility
+
+| Function | Description |
+|---|---|
+| `Equal(v, w)` | Element-wise equality → `*Tensor[int]` |
+| `IsClose(v, w, tol...)` | Element-wise approximate equality |
+| `EqualAll(v, w)` | All elements equal |
+| `IsCloseAll(v, w, tol...)` | All elements approximately equal |
+| `IsContiguous[T](v)` | True if row-major contiguous |
+| `SliceEqual(a, b)` | Compare two `[]int` slices |
+| `Contiguous[T](v)` | Return contiguous tensor (clone if needed) |
+| `FlatIndex[T](v, indices...)` | Flat index from multi-dim indices |
+| `UnravelIndex[T](v, index)` | Multi-dim indices from flat index |
+| `MatMul[T](v, w)` | Batched matrix multiply (parallel) |
+
+---
+
+## Relationship to Variable
+
+`Variable.Data` is always a `*Tensor[float64]`. The variable package wraps tensor operations in `Function` objects that record the computation graph:
+
+```go
+// Low-level: pure tensor (no graph)
+t := tensor.Add(a.Data, b.Data)
+
+// High-level: differentiable variable operation
+y := variable.Add(a, b)
+y.Backward() // uses the recorded graph
+```
+
+Use raw `tensor` operations when you need to manipulate data without affecting the computation graph, for example inside a `Forwarder.Forward` implementation.

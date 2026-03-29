@@ -1,0 +1,101 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "autograd",
+  "projectDescription": "A pure Go automatic differentiation library for building and training deep learning models.",
+  "theme": "luma",
+  "primaryColor": "#ffffff",
+  "lightColor": "#74d7ed",
+  "darkColor": "#38484e",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/variables",
+              "concepts/functions",
+              "concepts/autograd"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/gradient-descent",
+              "guides/deep-learning",
+              "guides/higher-order-gradients",
+              "guides/visualization"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Packages",
+            "pages": [
+              "api/variable",
+              "api/function",
+              "api/tensor",
+              "api/layer",
+              "api/model",
+              "api/optimizer",
+              "api/numerical",
+              "api/hook"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Reverse-mode automatic differentiation (backpropagation)",
+    "Higher-order gradients via double backpropagation",
+    "Pure Go implementation with no external dependencies",
+    "N-dimensional tensor operations",
+    "Built-in neural network layers (Linear, RNN, LSTM)",
+    "Pre-built models (MLP, LSTM)",
+    "Multiple optimizers: SGD, Momentum, Adam, AdamW",
+    "NoGrad and TestMode context managers",
+    "Numerical gradient checking for validation",
+    "Computation graph visualization via Graphviz dot output"
+  ],
+  "publicApiSurface": [
+    "variable.New(v ...float64) *Variable",
+    "variable.Variable.Backward(opts ...Opts)",
+    "variable.Variable.Cleargrad()",
+    "variable.Variable.UnchainBackward()",
+    "variable.Nograd() *Span",
+    "variable.TestMode() *Span",
+    "function.Add, Sub, Mul, Div, Neg",
+    "function.Sin, Cos, Tanh, Exp, Log",
+    "function.Pow, Square",
+    "function.Sum, Mean, Variance",
+    "function.MatMul, Transpose, Reshape, BroadcastTo",
+    "function.Sigmoid, ReLU, Softmax, SoftmaxCrossEntropy",
+    "function.MeanSquaredError, Linear",
+    "function.Dropout (DropoutSimple)",
+    "layer.Linear(outSize int) *LinearT",
+    "layer.RNN(hiddenSize int) *RNNT",
+    "layer.LSTM(hiddenSize int) *LSTMT",
+    "model.NewMLP(outSize []int, opts ...MLPOptionFunc) *MLP",
+    "model.NewLSTM(hiddenSize, outSize int, opts ...LSTMOptionFunc) *LSTM",
+    "optimizer.SGD{LearningRate float64}",
+    "optimizer.Momentum{LearningRate, Momentum float64}",
+    "optimizer.Adam{Alpha, Beta1, Beta2 float64}",
+    "optimizer.AdamW{Alpha, Beta1, Beta2, WeightDecay float64}",
+    "hook.WeightDecay(rate float64) Hook",
+    "hook.ClipGrad(max float64) Hook",
+    "numerical.Diff(f Func, x []*Variable, h ...float64) *Variable",
+    "tensor.New, Zeros, Rand, Randn, Reshape, Clone"
+  ]
+}

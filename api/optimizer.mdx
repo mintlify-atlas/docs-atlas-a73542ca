@@ -1,0 +1,297 @@
+---
+title: "optimizer package"
+description: "Gradient-based parameter update rules — SGD, Momentum, Adam, and AdamW."
+keywords: ["optimizer", "SGD", "Adam", "AdamW", "Momentum", "gradient descent", "learning rate"]
+---
+
+The `optimizer` package provides update rules that adjust model parameters using gradients computed by the autograd engine. All optimizers accept any value that satisfies the `Model` interface and support pre-update gradient hooks.
+
+## Model interface
+
+```go
+type Model interface {
+    Params() layer.Parameters
+}
+```
+
+Any struct with a `Params()` method that returns `layer.Parameters` can be passed to an optimizer. Both `model.MLP` and `model.LSTM` satisfy this interface.
+
+---
+
+## Hook type
+
+```go
+type Hook func(params []layer.Parameter)
+```
+
+A `Hook` is a function that receives the list of parameters with non-nil gradients before the parameter update step. Use hooks to apply regularization or gradient clipping globally without changing the optimizer implementation.
+
+The [hook package](/api/hook) provides two ready-made hooks: `WeightDecay` and `ClipGrad`.
+
+---
+
+## Params helper
+
+```go
+func Params(m Model, hook []Hook) []layer.Parameter
+```
+
+Collects parameters from `m` that have a non-nil gradient, applies each hook in order, then returns the filtered parameter slice. All optimizers call this internally — you rarely need to call it directly.
+
+<ParamField path="m" type="Model" required>
+  The model to collect parameters from.
+</ParamField>
+
+<ParamField path="hook" type="[]Hook">
+  Hook functions to run on the collected parameters before they are returned.
+</ParamField>
+
+---
+
+## SGD
+
+Stochastic gradient descent. Updates each parameter by subtracting the gradient scaled by the learning rate:
+
+```
+param = param - lr × grad
+```
+
+```go
+type SGD struct {
+    LearningRate float64
+    Hook         []Hook
+}
+```
+
+<ResponseField name="LearningRate" type="float64">
+  Step size applied to each gradient update.
+</ResponseField>
+
+<ResponseField name="Hook" type="[]Hook">
+  Gradient hooks run before each update step.
+</ResponseField>
+
+### Update
+
+```go
+func (o *SGD) Update(model Model)
+```
+
+Applies the SGD update rule to all parameters in `model` that have a gradient.
+
+---
+
+## Momentum
+
+SGD with momentum. Accumulates a velocity vector and updates parameters using:
+
+```
+v     = momentum × v - lr × grad
+param = param + v
+```
+
+```go
+type Momentum struct {
+    LearningRate float64
+    Momentum     float64
+    Hook         []Hook
+}
+```
+
+<ResponseField name="LearningRate" type="float64">
+  Step size applied to each gradient.
+</ResponseField>
+
+<ResponseField name="Momentum" type="float64">
+  Fraction of the previous velocity retained at each step. Typical value: `0.9`.
+</ResponseField>
+
+<ResponseField name="Hook" type="[]Hook">
+  Gradient hooks run before each update step.
+</ResponseField>
+
+### Update
+
+```go
+func (o *Momentum) Update(model Model)
+```
+
+Initializes velocity tensors on the first call, then applies the momentum update rule.
+
+---
+
+## Adam
+
+Adaptive moment estimation. Maintains per-parameter first and second moment estimates and applies bias correction:
+
+```
+m = m + (1 - β1) × (grad - m)
+v = v + (1 - β2) × (grad² - v)
+lr_corrected = α × √(1 - β2ᵗ) / (1 - β1ᵗ)
+param = param - lr_corrected × m / (√v + ε)
+```
+
+```go
+type Adam struct {
+    Alpha float64
+    Beta1 float64
+    Beta2 float64
+    Hook  []Hook
+}
+```
+
+<ResponseField name="Alpha" type="float64">
+  Base learning rate. Typical value: `0.001`.
+</ResponseField>
+
+<ResponseField name="Beta1" type="float64">
+  Exponential decay rate for the first moment estimate. Typical value: `0.9`.
+</ResponseField>
+
+<ResponseField name="Beta2" type="float64">
+  Exponential decay rate for the second moment estimate. Typical value: `0.999`.
+</ResponseField>
+
+<ResponseField name="Hook" type="[]Hook">
+  Gradient hooks run before each update step.
+</ResponseField>
+
+### Update
+
+```go
+func (o *Adam) Update(model Model)
+```
+
+Increments the internal iteration counter, computes bias-corrected learning rates, updates moment estimates, and applies the Adam parameter update.
+
+<Note>
+  The `Adam` struct maintains internal state (`ms`, `vs` maps and an iteration counter). Reuse the same `Adam` instance across training steps — creating a new one each step discards the accumulated moments.
+</Note>
+
+---
+
+## AdamW
+
+AdamW extends Adam with decoupled weight decay applied directly to the parameters rather than through the gradient. This avoids the interaction between adaptive learning rates and L2 regularization.
+
+```
+param = param - lr_corrected × m / (√v + ε) - lr_corrected × λ × param
+```
+
+```go
+type AdamW struct {
+    Adam
+    WeightDecay float64
+}
+```
+
+<ResponseField name="Adam" type="Adam">
+  Embedded Adam optimizer. Set `Alpha`, `Beta1`, `Beta2`, and `Hook` here.
+</ResponseField>
+
+<ResponseField name="WeightDecay" type="float64">
+  Weight decay coefficient λ. Typical value: `0.01`.
+</ResponseField>
+
+### Update
+
+```go
+func (o *AdamW) Update(model Model)
+```
+
+Applies the AdamW update: the standard Adam moment update plus decoupled weight decay scaled by the corrected learning rate.
+
+---
+
+## Examples
+
+### SGD
+
+```go
+opt := &optimizer.SGD{LearningRate: 0.01}
+
+for range 1000 {
+    y := model.Forward(x)
+    loss := F.MeanSquaredError(y, t)
+
+    model.Cleargrads()
+    loss.Backward()
+    opt.Update(model)
+}
+```
+
+### Momentum
+
+```go
+opt := &optimizer.Momentum{
+    LearningRate: 0.01,
+    Momentum:     0.9,
+}
+
+for range 1000 {
+    y := model.Forward(x)
+    loss := F.MeanSquaredError(y, t)
+
+    model.Cleargrads()
+    loss.Backward()
+    opt.Update(model)
+}
+```
+
+### Adam
+
+```go
+opt := &optimizer.Adam{
+    Alpha: 0.001,
+    Beta1: 0.9,
+    Beta2: 0.999,
+}
+
+for range 1000 {
+    y := model.Forward(x)
+    loss := F.SoftmaxCrossEntropy(y, t)
+
+    model.Cleargrads()
+    loss.Backward()
+    opt.Update(model)
+}
+```
+
+### AdamW
+
+```go
+opt := &optimizer.AdamW{
+    Adam: optimizer.Adam{
+        Alpha: 0.001,
+        Beta1: 0.9,
+        Beta2: 0.999,
+    },
+    WeightDecay: 0.01,
+}
+```
+
+### Attaching hooks
+
+```go
+import "github.com/itsubaki/autograd/hook"
+
+opt := &optimizer.Adam{
+    Alpha: 0.001,
+    Beta1: 0.9,
+    Beta2: 0.999,
+    Hook: []optimizer.Hook{
+        hook.WeightDecay(1e-4),
+        hook.ClipGrad(1.0),
+    },
+}
+```
+
+Hooks are applied in order before the parameter update. `WeightDecay` adds L2 regularization to the gradients; `ClipGrad` rescales gradients whose global norm exceeds the threshold.
+
+---
+
+## See also
+
+- [model package](/api/model) — `MLP` and `LSTM` model types
+- [hook package](/api/hook) — `WeightDecay` and `ClipGrad` hooks
+- [Guides: gradient descent](/guides/gradient-descent) — walkthrough of the training loop

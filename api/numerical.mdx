@@ -1,0 +1,151 @@
+---
+title: "numerical package"
+description: "Numerical differentiation utilities for verifying analytical gradients."
+keywords: ["numerical", "gradient check", "finite difference", "central difference", "diff"]
+---
+
+The `numerical` package computes approximate derivatives using the central finite difference method. Its primary use is **gradient checking** — comparing numerically approximated gradients against the analytical gradients produced by autograd's backward pass to verify that a custom function or layer is correctly implemented.
+
+## Func type
+
+```go
+type Func func(x ...*variable.Variable) *variable.Variable
+```
+
+`Func` is the function signature accepted by `Diff`. Any function that maps one or more variables to a single output variable satisfies this type.
+
+All standard library functions (`F.Sin`, `F.Mul`, `F.MatMul`, `F.MeanSquaredError`, etc.) satisfy `Func`.
+
+---
+
+## Diff
+
+```go
+func Diff(f Func, x []*variable.Variable, h ...float64) *variable.Variable
+```
+
+Approximates the partial derivative of `f` with respect to each element of `x` using the **central difference formula**:
+
+```
+df/dx ≈ (f(x + h) - f(x - h)) / 2h
+```
+
+<ParamField path="f" type="Func" required>
+  The function to differentiate.
+</ParamField>
+
+<ParamField path="x" type="[]*variable.Variable" required>
+  The point at which to evaluate the derivative. Each variable in the slice is shifted by `h` independently.
+</ParamField>
+
+<ParamField path="h" type="...float64">
+  Step size for the finite difference approximation. Defaults to `1e-4` if omitted. Smaller values reduce truncation error but increase floating-point rounding error.
+</ParamField>
+
+<ResponseField name="return" type="*variable.Variable">
+  A variable whose data holds the numerically computed derivative values. Gradients are not tracked on the returned variable.
+</ResponseField>
+
+<Note>
+  `Diff` evaluates `f` twice (at `x + h` and `x - h`) and does not call `Backward`. It produces a raw numerical approximation, not a computation graph node.
+</Note>
+
+---
+
+## Use case: gradient checking
+
+Gradient checking compares the numerical derivative from `Diff` against the analytical gradient from `Backward`. A large discrepancy indicates a bug in the backward function of a custom operation.
+
+Typical workflow:
+
+1. Compute analytical gradients via `y.Backward()`.
+2. Compute numerical gradients via `numerical.Diff(f, x)`.
+3. Compare element-wise — values should agree to roughly `1e-4` or better.
+
+---
+
+## Examples
+
+### Numerical gradient of sin
+
+```go
+package main
+
+import (
+    "fmt"
+
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/numerical"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    x := variable.New(1.0)
+
+    // Analytical gradient: d(sin(x))/dx = cos(x)
+    y := F.Sin(x)
+    y.Backward()
+    fmt.Println("analytical:", x.Grad.Data) // ≈ cos(1) ≈ 0.5403
+
+    // Numerical gradient
+    x2 := variable.New(1.0)
+    grad := numerical.Diff(F.Sin, []*variable.Variable{x2})
+    fmt.Println("numerical: ", grad.Data) // ≈ 0.5403
+}
+```
+
+### Gradient check for a custom function
+
+```go
+package main
+
+import (
+    "fmt"
+    "math"
+
+    F "github.com/itsubaki/autograd/function"
+    "github.com/itsubaki/autograd/numerical"
+    "github.com/itsubaki/autograd/variable"
+)
+
+func main() {
+    // f(x) = x^3 — analytical gradient: 3x^2
+    cubic := func(x ...*variable.Variable) *variable.Variable {
+        return F.Mul(x[0], F.Mul(x[0], x[0]))
+    }
+
+    x := variable.New(2.0)
+
+    // Numerical
+    numGrad := numerical.Diff(cubic, []*variable.Variable{x})
+    fmt.Println("numerical gradient:", numGrad.Data) // ≈ 12.0
+
+    // Analytical
+    y := cubic(x)
+    y.Backward()
+    fmt.Println("analytical gradient:", x.Grad.Data) // 12.0
+
+    // Compare
+    diff := math.Abs(numGrad.Data.At() - x.Grad.Data.At())
+    fmt.Printf("difference: %e\n", diff) // should be < 1e-8
+}
+```
+
+### Using a custom step size
+
+```go
+// Use a smaller step for higher precision (at cost of more rounding error)
+grad := numerical.Diff(F.Tanh, []*variable.Variable{x}, 1e-6)
+```
+
+<Tip>
+  If the numerical and analytical gradients disagree by more than `1e-4`, check your backward function implementation first. Common mistakes include incorrect chain rule application or sign errors.
+</Tip>
+
+---
+
+## See also
+
+- [function package](/api/function) — built-in differentiable functions
+- [Concepts: autograd](/concepts/autograd) — how analytical gradients are computed
+- [Guides: higher-order gradients](/guides/higher-order-gradients) — advanced gradient topics
